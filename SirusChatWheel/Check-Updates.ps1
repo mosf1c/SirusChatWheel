@@ -1,4 +1,4 @@
-param([string]$Repository = '', [switch]$PromptForRepository, [switch]$Quiet)
+param([string]$Repository = '', [switch]$Quiet)
 $ErrorActionPreference = 'Stop'
 $configPath = Join-Path $PSScriptRoot 'UpdateConfig.json'
 $statusPath = Join-Path $PSScriptRoot 'UpdateStatus.lua'
@@ -25,14 +25,8 @@ try {
         $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $Repository = [string]$config.repository
     }
-    if ([string]::IsNullOrWhiteSpace($Repository) -and $PromptForRepository) {
-        $Repository = Read-Host 'GitHub repository URL or OWNER/REPO (public repository)'
-        $explicitRepository = -not [string]::IsNullOrWhiteSpace($Repository)
-    }
     if ([string]::IsNullOrWhiteSpace($Repository)) {
-        if (-not (Test-Path -LiteralPath $statusPath)) { Write-Status '' '' 'unconfigured' }
-        if (-not $Quiet) { Write-Host 'Run Check-Updates.cmd once to configure a public GitHub repository.' }
-        exit 0
+        $Repository = 'mosf1c/SirusChatWheel'
     }
     $Repository = $Repository.Trim().TrimEnd('/')
     $Repository = $Repository -replace '^https://github\.com/', '' -replace '\.git$', ''
@@ -65,7 +59,7 @@ try {
         Write-Host ('Installed: ' + $installed + '; GitHub: ' + $latest)
         if ($newer) {
             Write-Host ('Update available: https://github.com/' + $Repository + '/releases/latest')
-            Write-Host 'Use the -update.zip asset to preserve your sounds and catalog.'
+            Write-Host 'Close WoW, extract the ZIP and copy SirusChatWheel into Interface\AddOns, replacing files.'
         } else { Write-Host 'No newer stable release.' }
         Write-Host 'Use /reload in game, then /scw update to see this check.'
     }

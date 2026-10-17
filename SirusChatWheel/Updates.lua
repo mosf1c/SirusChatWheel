@@ -41,7 +41,7 @@ function A:ShowUpdateStatus(automatic)
     local checked = date and date("%d.%m.%Y %H:%M", at) or tostring(at)
     if newer then
         self:Print("Доступна версия " .. status.version .. " (у вас " .. self.version .. "). Проверено: " .. checked .. ".")
-        self:Print("https://github.com/" .. repository .. "/releases/latest — скачайте архив -update.zip.")
+        self:Print("https://github.com/" .. repository .. "/releases/latest — скопируйте папку из архива в Interface\\AddOns с заменой файлов.")
     else
         self:Print("По проверке GitHub от " .. checked .. " новее версии " .. self.version .. " нет.")
     end

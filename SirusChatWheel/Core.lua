@@ -1,7 +1,7 @@
 -- WoW 3.3.5a / Lua 5.1. No runtime libraries required.
 SirusChatWheel = {}
 local A = SirusChatWheel
-A.version = "1.2.4"
+A.version = "1.4.0"
 A.binding = "SIRUSCHATWHEEL_HOLD"
 A.media = "Interface\\AddOns\\SirusChatWheel\\Media\\"
 A.speakerMarkup = "|T" .. A.media .. "Speaker.tga:18:18:0:0|t "
@@ -112,7 +112,8 @@ function A:Normalize(source)
         end
     end
     db.soundUses = uses
-    db.schema = 3
+    db.mutedPlayers = self:NormalizeMutedPlayers(db.mutedPlayers)
+    db.schema = 4
     return db
 end
 

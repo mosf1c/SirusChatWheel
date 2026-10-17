@@ -1,17 +1,14 @@
 # Generated packages and local test files.
 /dist/
+/audio-originals/
 **/__pycache__/
 *.pyc
 
-# Generated catalog, local names, GitHub settings and check results.
+# Generated catalog/cache, local GitHub settings and check results.
 /SirusChatWheel/Catalog.lua
-/SirusChatWheel/SoundNames.json
 /SirusChatWheel/Media/Cache/
 /SirusChatWheel/UpdateConfig.json
 /SirusChatWheel/UpdateStatus.lua
 *.tmp
 
-# Only the two bundled samples belong in the source repository.
-/SirusChatWheel/Sounds/*
-!/SirusChatWheel/Sounds/Cat.wav
-!/SirusChatWheel/Sounds/Dog.wav
+# Sounds and SoundNames.json belong to the publisher and are versioned.

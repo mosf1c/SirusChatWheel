@@ -57,7 +57,7 @@ SlashCmdList["SIRUSCHATWHEEL"] = function(message)
         A:CloseWheel(false)
         A.held = false
     elseif command == "sounds" then
-        A:Print("Голосовых файлов: " .. #A.soundList .. ". Папка Sounds; обновление — Update-Sounds.cmd, затем /reload.")
+        A:Print("Голосовых файлов: " .. #A.soundList .. ". Новые звуки входят в полные выпуски аддона.")
     elseif command == "update" then
         A:ShowUpdateStatus(false)
     else

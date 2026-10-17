@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "SirusChatWheel"
 MOCK = (ROOT / "tests/wow_mock.lua").read_text(encoding="utf-8")
 PS = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+BASE_SOUND_COUNT = sum(1 for p in (ADDON / "Sounds").rglob("*") if p.is_file() and p.suffix.lower() in {".wav", ".mp3", ".ogg"})
 checks, failures = 0, []
 
 
@@ -28,7 +29,7 @@ def check(condition, message):
 
 
 class Client:
-    def __init__(self, player="Sender", root=ADDON, epoch=None):
+    def __init__(self, player="Sender", root=ADDON, epoch=None, saved_path=None):
         self.log = []
         self.lua = LuaRuntime(unpack_returned_tuples=True)
         self.g = self.lua.globals()
@@ -37,6 +38,8 @@ class Client:
         self.g.player = player
         if epoch is not None:
             self.g.epoch = epoch
+        if saved_path is not None:
+            self.lua.execute(saved_path.read_text(encoding="utf-8-sig"), name="SavedVariables")
         for file in root.joinpath("SirusChatWheel.toc").read_text(encoding="utf-8-sig").splitlines():
             if file and not file.startswith("#"):
                 self.lua.execute(root.joinpath(file).read_text(encoding="utf-8-sig"), name=file)
@@ -65,7 +68,7 @@ def pump(sender, receiver):
 def test_base():
     c = Client()
     check(c.lua.eval("_VERSION") == "Lua 5.1", "real Lua 5.1 runtime")
-    check(c.a.ready and len(c.a.soundList) == 2, "TOC startup and bundled sounds")
+    check(c.a.ready and len(c.a.soundList) == BASE_SOUND_COUNT, "TOC startup and all bundled sounds")
     check(c.g.binding == c.a.binding, "first login binds Y")
     check(len(c.a.textChoices) == 12, "12 text choices")
     entries = c.call("BuildPickerEntries")
@@ -108,6 +111,96 @@ def test_base():
     c.a.options.default()
     c.call("ApplyOptions")
     check(len(c.a.db.slots) == 8, "options default and apply")
+
+
+def test_player_mutes():
+    c = Client("Listener")
+    sid = c.a.soundList[1].id
+    digest = c.a.clips[sid].digest
+    wire = lambda nonce: f"P|{sid}|{nonce}|{digest}"
+    check(len(c.a.optionTabs) == 4 and c.a.optionTabs[4].text == "Игроки", "players tab is available")
+    check(c.call("HandleAddonSound", c.a.prefix, wire("recent"), "RAID", "Sender"), "unmuted raid sender plays")
+    row = c.a.playerOptions.rows[1]
+    check(row.entry.name == "Sender-Sirus" and row.phrase.text == c.a.clips[sid].title, "recent list contains sender and last confirmed phrase")
+    row.action.scripts.OnClick(row.action)
+    check(c.call("IsPlayerMuted", "sender") and row.action.text == "Вернуть звук", "recent sender button mutes immediately ignoring case")
+    before = len(c.events("play"))
+    check(not c.call("HandleAddonSound", c.a.prefix, wire("muted"), "RAID", "Sender"), "muted raid packet does not play or queue")
+    c.tick(10)
+    check(len(c.events("play")) == before and not c.events("chat"), "mute adds no chat and no delayed playback")
+    check(not c.call("HandleSayDiscovery", c.a.clips[sid].title, "Sender"), "muted say title sends no discovery query")
+    check(not c.events("packet"), "muting does not create outgoing network traffic")
+    # Settings drafts, defaults and Cancel cannot undo immediate player mutes.
+    c.call("ApplyOptions")
+    c.a.options.cancel()
+    c.a.options.default()
+    c.call("ApplyOptions")
+    check(c.call("IsPlayerMuted", "Sender-Sirus"), "Save, Cancel and defaults preserve mutes")
+    c.lua.execute('SirusChatWheelDB = SirusChatWheel:Copy(SirusChatWheel.db)')
+    c.g.FireEvent("PLAYER_LEAVING_WORLD")
+    normalized = c.call("Normalize", c.g.SirusChatWheelDB)
+    check(normalized.mutedPlayers["sender-sirus"] == "Sender-Sirus", "mute survives SavedVariables normalization")
+    ui = c.a.playerOptions
+    ui.muted.scripts.OnClick(ui.muted)
+    check(ui.rows[1].entry.name == "Sender-Sirus", "muted list includes saved sender")
+    ui.rows[1].action.scripts.OnClick(ui.rows[1].action)
+    check(not c.call("IsPlayerMuted", "Sender") and ui.rows[1].entry is None, "unmute button immediately removes saved entry")
+    check(not c.call("HandleAddonSound", c.a.prefix, wire("muted"), "RAID", "Sender"), "muted packet is not replayed after unmute")
+    check(c.call("HandleAddonSound", c.a.prefix, wire("resumed"), "RAID", "Sender"), "new raid sound works after unmute")
+    ui.input.SetText(ui.input, "  КОРОЛЬ  ")
+    ui.input.scripts.OnEnterPressed(ui.input)
+    check(c.call("IsPlayerMuted", "король-SIRUS") and ui.input.GetText(ui.input) == "", "manual mute handles Cyrillic case and clears input")
+    check(not c.call("IsPlayerMuted", "Король-OtherRealm"), "same nickname on another realm is independent")
+    check(not c.call("HandleAddonSound", c.a.prefix, wire("foreign"), "RAID", "Sender-OtherRealm"), "raid identity cannot borrow membership from another realm")
+    check(not c.call("SetPlayerMuted", "Listener", True)[0], "own character cannot be muted")
+    for name in ("", "bad name", "|Hplayer:Someone|h", "bad\nname", "A" * 49):
+        check(not c.call("SetPlayerMuted", name, True)[0], "invalid mute name rejected: " + repr(name))
+    for i in range(8):
+        check(c.call("SetPlayerMuted", "Player" + chr(65 + i), True)[0], "manual muted player added")
+    c.call("ScrollPlayers", -1)
+    check(c.g.FauxScrollFrame_GetOffset(ui.scroll) > 0 and ui.rows[5].entry is not None, "muted list scroll reaches entries beyond five rows")
+    # Only queued clips from the newly muted sender are removed.
+    q = Client("Listener")
+    q.call("QueueClip", sid, False)
+    q.call("HandleAddonSound", q.a.prefix, wire("queuedA"), "RAID", "Sender")
+    q.call("HandleAddonSound", q.a.prefix, wire("queuedB"), "RAID", "Receiver")
+    check(len(q.a.soundQueue) == 2, "two different remote senders queue behind local audio")
+    q.call("SetPlayerMuted", "Sender", True)
+    check(len(q.a.soundQueue) == 1 and q.a.soundQueue[1].sender == "receiver-sirus", "mute removes only that sender's queued audio")
+    q.tick(10)
+    check(len(q.events("play")) == 2, "other sender still plays after queue cleanup")
+    # Cancel an outstanding say handshake when muting, and preserve outbound replies.
+    s, r = Client(), Client("Receiver")
+    s.a.db.channel = "SAY"
+    s.call("SendSound", sid)
+    r.call("HandleSayDiscovery", s.a.clips[sid].title, "Sender")
+    request = r.events("packet")[0][2]
+    check(bool(list(r.a.pendingQueries.items())), "say discovery has pending confirmation")
+    r.call("SetPlayerMuted", "Sender", True)
+    check(not list(r.a.pendingQueries.items()), "mute cancels pending say confirmation")
+    pump(r, s)
+    pump(s, r)
+    check(not r.events("play"), "late say response after mute cannot play")
+    outgoing = Client()
+    outgoing.a.db.channel = "SAY"
+    outgoing.call("SetPlayerMuted", "Receiver", True)
+    outgoing.call("SendSound", sid)
+    check(outgoing.call("HandleAddonSound", outgoing.a.prefix, request, "WHISPER", "Receiver-Sirus"), "mute does not prevent responding to others about own sounds")
+    r.call("SetPlayerMuted", "Sender", False)
+    s.tick(31)
+    r.tick(31)
+    s.call("SendSound", sid)
+    r.call("HandleSayDiscovery", s.a.clips[sid].title, "Sender")
+    pump(r, s)
+    pump(s, r)
+    check(len(r.events("play")) == 1, "say handshake works again after unmute")
+    # Verify real Lua reload through SavedVariables, including malformed legacy values.
+    with tempfile.TemporaryDirectory(prefix="scw-mutes-") as folder:
+        saved = Path(folder) / "SirusChatWheel.lua"
+        saved.write_text('SirusChatWheelDB={mutedPlayers={["sender-sirus"]="Sender-Sirus",bad=true}}', encoding="utf-8")
+        restored = Client("Receiver", saved_path=saved)
+        check(restored.call("IsPlayerMuted", "Sender"), "SavedVariables restore mute on a fresh client")
+        check(len(list(restored.a.db.mutedPlayers.items())) == 1, "malformed saved mute entries are discarded")
 
 
 def test_limits_and_network():
@@ -233,7 +326,7 @@ def test_catalog():
         before_names = (addon / "SoundNames.json").read_bytes()
         run_catalog(addon)
         c = Client(root=addon)
-        check(len(c.a.soundList) == 3, "PS5.1 to Lua5.1 accepts uppercase MP3 with unicode path")
+        check(len(c.a.soundList) == BASE_SOUND_COUNT + 1, "PS5.1 to Lua5.1 accepts uppercase MP3 with unicode path")
         sid = c.a.soundByFile["Русские записи/Тест.MP3".lower()]
         # Lua string.lower is ASCII; match the original Cyrillic path explicitly.
         if sid is None:
@@ -254,7 +347,7 @@ def test_catalog():
         run_catalog(addon)
         c.lua.execute((addon / "Catalog.lua").read_text(encoding="utf-8"))
         c.call("LoadCatalog")
-        check(len(c.a.soundList) == 2, "deleting sound removes catalog entry")
+        check(len(c.a.soundList) == BASE_SOUND_COUNT, "deleting sound removes catalog entry")
         check(hashlib.sha256((addon / "Sounds/Cat.wav").read_bytes()).digest() == hashlib.sha256((ADDON / "Sounds/Cat.wav").read_bytes()).digest(), "utility leaves original sounds intact")
 
 
@@ -273,31 +366,33 @@ def test_updates():
         wrapper = Path(directory) / "invoke.ps1"
         ps_path = str(addon / "Check-Updates.ps1").replace("'", "''")
         fixture_path = str(fixture).replace("'", "''")
-        def invoke(release, repository="example/SirusChatWheel", fail=False):
+        def invoke(release, repository="example/SirusChatWheel", fail=False, expected_repository="example/SirusChatWheel"):
             fixture.write_text(json.dumps(release), encoding="utf-8")
             body = "throw 'simulated offline'" if fail else f"Get-Content -LiteralPath '{fixture_path}' -Raw -Encoding UTF8 | ConvertFrom-Json"
             command = f"& '{ps_path}' -Quiet"
             if repository is not None:
                 command += " -Repository '" + repository.replace("'", "''") + "'"
             wrapper.write_text("function Invoke-RestMethod { param($Uri,$Headers,$UserAgent,$TimeoutSec)\n"
-                "if ($Uri -ne 'https://api.github.com/repos/example/SirusChatWheel/releases/latest') { throw 'wrong endpoint' }\n"
+                f"if ($Uri -ne 'https://api.github.com/repos/{expected_repository}/releases/latest') {{ throw 'wrong endpoint' }}\n"
                 "if ($TimeoutSec -ne 8) { throw 'missing timeout' }\n" + body + "\n}\n" + command + "\nexit $LASTEXITCODE\n", encoding="utf-8")
             env = os.environ.copy()
             env["PSModulePath"] = str(PS.parent / "Modules")
             return subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper)], capture_output=True, env=env)
         original = {name: (addon / name).read_bytes() for name in ["Core.lua", "Catalog.lua", "SoundNames.json", "Sounds/Cat.wav"]}
-        release = {"tag_name": "v1.3.0", "draft": False, "prerelease": False}
+        major, minor, _ = map(int, c.a.version.split("."))
+        newer_version = f"{major}.{minor + 1}.0"
+        release = {"tag_name": "v" + newer_version, "draft": False, "prerelease": False}
         result = invoke(release, "https://github.com/example/SirusChatWheel.git")
         check(result.returncode == 0, "PS5.1 GitHub API schema and URL normalization")
         check(json.loads((addon / "UpdateConfig.json").read_text(encoding="utf-8"))["repository"] == "example/SirusChatWheel", "repository saved separately from WoW settings")
         c = Client(root=addon, epoch=int(time.time())-100)
-        check(c.g.SirusChatWheelUpdateStatus.version == "1.3.0", "PowerShell result loads as Lua5.1")
-        check(any("1.3.0" in event[1] for event in c.events("print")), "new release notification on login")
+        check(c.g.SirusChatWheelUpdateStatus.version == newer_version, "PowerShell result loads as Lua5.1")
+        check(any(newer_version in event[1] for event in c.events("print")), "new release notification on login")
         check(not c.events("chat") and not c.events("play") and not c.events("packet"), "update notification stays local")
         c.log.clear()
         c.tick(86401)
         check(not c.call("ShowUpdateStatus", False) and len(c.events("print")) == 1, "stale check cannot claim up-to-date")
-        release["tag_name"] = "v1.2.4"
+        release["tag_name"] = "v" + c.a.version
         check(invoke(release, repository=None).returncode == 0, "saved repository reused")
         c = Client(root=addon, epoch=int(time.time())-100)
         c.log.clear()
@@ -315,18 +410,123 @@ def test_updates():
         check(invoke(release).returncode != 0, "prerelease not advertised as stable")
         check(invoke(release, repository="https://invalid.example/a/b").returncode != 0, "non-GitHub source rejected")
         check(all((addon / name).read_bytes() == data for name, data in original.items()), "checking never replaces addon code, catalog, names or sounds")
+        (addon / "UpdateConfig.json").unlink()
+        release["tag_name"], release["prerelease"] = "v1.3.0", False
+        check(invoke(release, repository=None, expected_repository="mosf1c/SirusChatWheel").returncode == 0, "fresh install checks the publisher repository without configuration")
+        check(not (addon / "UpdateConfig.json").exists(), "default repository needs no user configuration file")
+
+
+def test_full_release_copy():
+    import importlib.util
+    import zipfile
+    import wave
+    spec = importlib.util.spec_from_file_location("scw_build_release", ROOT / "tools/build_release.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    with tempfile.TemporaryDirectory(prefix="scw-copy-") as directory:
+        base = Path(directory)
+        source = base / "source/SirusChatWheel"
+        shutil.copytree(ADDON, source)
+        (source / "UpdateConfig.json").write_text('{"repository":"local/config"}', encoding="utf-8")
+        builder.ADDON, builder.DIST = source, base / "dist"
+        release = builder.build()
+        check(list(builder.DIST.iterdir()) == [release], "publisher builds exactly one complete ZIP")
+        game = base / "My game"
+        addons = game / "Interface/AddOns"
+        addons.mkdir(parents=True)
+        with zipfile.ZipFile(release) as archive:
+            check(archive.testzip() is None, "full release ZIP integrity")
+            check(not any("Install." in name for name in archive.namelist()), "release requires no installer")
+            check("SirusChatWheel/Catalog.lua" in archive.namelist(), "ready catalog is included")
+            check(not any("UpdateConfig.json" in name for name in archive.namelist()), "release excludes local GitHub configuration")
+            archive.extractall(addons)
+        target = addons / "SirusChatWheel"
+        c = Client(root=target)
+        check(c.a.ready and len(c.a.soundList) == BASE_SOUND_COUNT, "fresh user installs by copying without running scripts")
+        cat, dog = c.a.soundByFile["cat.wav"], c.a.soundByFile["dog.wav"]
+        saved = game / "WTF/Account/example/SavedVariables/SirusChatWheel.lua"
+        saved.parent.mkdir(parents=True)
+        saved.write_text('SirusChatWheelDB = {channel="SAY",scale=1.2,sensitivity=1.3,deadzone=20,bindingInitialized=true,'
+            'slots={{kind="sound",id="' + cat + '"},{kind="text",text="KEEP"},{kind="sound",id="' + dog + '"}},'
+            'mutedPlayers={["sender-sirus"]="Sender-Sirus"},soundUses={1700000090,1700000095}}', encoding="utf-8")
+        saved_bytes = saved.read_bytes()
+        config = target / "UpdateConfig.json"
+        config.write_bytes(b'{"repository":"user/repo"}')
+        # The author changes a sound in place and adds two new sounds to the next ZIP.
+        def wav(path, byte):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(path), "wb") as output:
+                output.setparams((1, 2, 44100, 0, "NONE", "not compressed"))
+                output.writeframes(bytes([byte, 0]) * 4410)
+        wav(source / "Sounds/Cat.wav", 1)
+        new_wav = "Новые/Сигнал.wav"
+        new_mp3 = "New/Voice.MP3"
+        wav(source / "Sounds" / new_wav, 2)
+        (source / "Sounds/New").mkdir()
+        mp3 = (b"\xff\xfb\x90\x00" + bytes(413)) * 4
+        (source / "Sounds" / new_mp3).write_bytes(mp3)
+        (source / "Sounds/ignore.exe").write_bytes(b"NOT AUDIO")
+        names = json.loads((source / "SoundNames.json").read_text(encoding="utf-8-sig"))
+        names.update({"Cat.wav": "Обновлённый кот", new_wav: "Новый сигнал", new_mp3: "Новый голос"})
+        (source / "SoundNames.json").write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+        names_bytes = (source / "SoundNames.json").read_bytes()
+        release = builder.build()
+        check((source / "SoundNames.json").read_bytes() == names_bytes, "build preserves publisher names")
+        with zipfile.ZipFile(release) as archive:
+            check("SirusChatWheel/Sounds/" + new_wav in archive.namelist() and "SirusChatWheel/Sounds/" + new_mp3 in archive.namelist(), "all newly added publisher WAV and MP3 files enter the ZIP")
+            check(not any("ignore.exe" in name for name in archive.namelist()), "non-audio files are excluded")
+            archive.extractall(addons)  # Ordinary copy with replacement; no helper runs.
+        c = Client(root=target, saved_path=saved)
+        check(c.a.ready and len(c.a.soundList) == BASE_SOUND_COUNT + 2, "copying a new ZIP immediately exposes the new sound set")
+        check(c.a.db.slots[1].kind == "sound" and c.a.db.slots[1].id == cat, "existing sound sector keeps its stable file ID")
+        check(c.call("GetSlotText", 1) == "Обновлённый кот", "new title and audio content replace the old release")
+        check(c.a.db.slots[2].text == "KEEP" and c.a.db.slots[3].id == dog, "other sector assignments survive copying")
+        check(c.a.db.channel == "SAY" and c.a.db.scale == 1.2 and c.a.db.sensitivity == 1.3 and c.a.db.deadzone == 20, "channel and wheel settings survive copying")
+        check(len(c.a.db.soundUses) == 2, "copying an update does not reset the voice rate limit")
+        check(c.call("IsPlayerMuted", "Sender"), "copying an update preserves player mutes")
+        check(saved.read_bytes() == saved_bytes, "copying never replaces WTF settings")
+        check(config.read_bytes() == b'{"repository":"user/repo"}', "copying preserves optional local GitHub configuration")
+        new_clips = {clip.filename: clip for _, clip in c.a.soundList.items()}
+        for filename in (new_wav, new_mp3):
+            clip = new_clips[filename]
+            cache = target / "Media" / clip.file.replace("\\", "/")
+            check(cache.read_bytes() == (source / "Sounds" / filename).read_bytes(), "copied release includes ready cache for " + filename)
+            check(c.call("QueueClip", clip.id, False), "new audio reaches the playback API without rebuilding " + filename)
+        c.tick(10)
+        check(len(c.events("play")) == 2, "both newly packaged sounds play through the queue")
+        # A removed release entry stays unavailable even if copy leaves its old file behind.
+        (source / "Sounds/Dog.wav").unlink()
+        release = builder.build()
+        with zipfile.ZipFile(release) as archive:
+            archive.extractall(addons)
+        c = Client(root=target, saved_path=saved)
+        check((target / "Sounds/Dog.wav").exists(), "test reproduces an old file left behind by merging folders")
+        check(c.a.soundByFile["dog.wav"] is None and c.a.db.slots[3].kind == "empty", "new catalog excludes removed audio and clears its sector despite leftover files")
+        check(c.a.db.slots[1].id == cat and c.a.db.slots[2].text == "KEEP", "removing one sound leaves other assignments intact")
+        # The optional launch helper must not re-scan obsolete files left by merging.
+        catalog_bytes = (target / "Catalog.lua").read_bytes()
+        fake_game = game / "WoW.exe"
+        fake_game.write_bytes(b"LAUNCH TEST STAND-IN")
+        wrapper = base / "launch.ps1"
+        script_path = str(target / "SoundCatalog.ps1").replace("'", "''")
+        game_path = str(fake_game).replace("'", "''")
+        wrapper.write_text("function Start-Process { param($FilePath,$WorkingDirectory,[switch]$PassThru) }\n"
+            f"& '{script_path}' -LaunchGame -SkipCatalogUpdate -GamePath '{game_path}'\nexit $LASTEXITCODE\n", encoding="utf-8")
+        env = os.environ.copy()
+        env["PSModulePath"] = str(PS.parent / "Modules")
+        launched = subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper)], capture_output=True, env=env)
+        check(launched.returncode == 0, "optional launch helper uses the packaged catalog")
+        check((target / "Catalog.lua").read_bytes() == catalog_bytes, "launching cannot restore excluded old audio into the catalog")
 
 
 if __name__ == "__main__":
     # A source checkout intentionally excludes generated installation files.
     # Create only missing defaults; preserve an existing working installation.
-    if not (ADDON / "SoundNames.json").exists():
-        shutil.copyfile(ADDON / "SoundNames.example.json", ADDON / "SoundNames.json")
     if not (ADDON / "Catalog.lua").exists():
         run_catalog(ADDON)
     if not (ADDON / "UpdateStatus.lua").exists():
         (ADDON / "UpdateStatus.lua").write_text("SirusChatWheelUpdateStatus = {}\n", encoding="utf-8")
-    for test in (test_base, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates):
+    for test in (test_base, test_player_mutes, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_full_release_copy):
         try:
             test()
         except Exception as error:

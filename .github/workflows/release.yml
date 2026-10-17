@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Check version tag
+        id: version
+        run: |
+          $toc = Get-Content -LiteralPath SirusChatWheel/SirusChatWheel.toc -Raw
+          $match = [regex]::Match($toc, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$')
+          if (!$match.Success) { throw 'Missing addon version' }
+          $version = $match.Groups[1].Value
+          if ($env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag and addon version differ' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Install Lua 5.1 test runtime
+        run: python -m pip install lupa==2.8
+      - name: Test addon and installation
+        run: python tests/validate.py
+      - name: Build complete addon archive
+        run: python tools/build_release.py
+      - name: Create draft with complete archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME "dist/SirusChatWheel-$env:RELEASE_VERSION.zip" --verify-tag --draft --title "SirusChatWheel $env:RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit $env:GITHUB_REF_NAME --draft=false --latest

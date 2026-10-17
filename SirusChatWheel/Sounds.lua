@@ -44,19 +44,16 @@ function A:Nonce()
     return self.sessionNonce .. "_" .. tostring(math.floor(GetTime() * 1000)) .. "_" .. tostring(self.nonceCounter)
 end
 
-function A:PeerName(name)
-    return type(name) == "string" and (string.match(name, "^[^-]+") or name) or ""
-end
-
 function A:IsGroupPeer(sender, channel)
-    local name = self:PeerName(sender)
+    local name = self:PlayerIdentity(sender)
+    if not name then return false end
     if channel == "RAID" then
         for i = 1, GetNumRaidMembers() do
-            if name == self:PeerName(GetRaidRosterInfo(i)) then return true end
+            if name == self:PlayerIdentity(GetRaidRosterInfo(i)) then return true end
         end
     elseif channel == "PARTY" then
         for i = 1, GetNumPartyMembers() do
-            if name == self:PeerName(UnitName("party" .. i)) then return true end
+            if name == self:PlayerIdentity(UnitName("party" .. i)) then return true end
         end
     end
     return false
@@ -87,13 +84,13 @@ function A:CanQueueClip()
     return #(self.soundQueue or {}) < 8
 end
 
-function A:QueueClip(id, remote)
+function A:QueueClip(id, remote, sender)
     if not self.clips[id] or not self.soundFrame then return false end
-    if remote and not self.db.receiveSounds then return false end
+    if remote and (not self.db.receiveSounds or self:IsPlayerMuted(sender)) then return false end
     self.soundQueue = self.soundQueue or {}
     if #self.soundQueue == 0 and GetTime() >= (self.soundBusyUntil or 0) then return self:PlayClipNow(id) end
     if not self:CanQueueClip() then return false end
-    table.insert(self.soundQueue, { id = id, remote = remote and true or false })
+    table.insert(self.soundQueue, { id = id, remote = remote and true or false, sender = self:PlayerIdentity(sender) })
     self.soundFrame:Show()
     return true
 end
@@ -149,8 +146,9 @@ end
 
 function A:HandleSayDiscovery(message, sender)
     if not self.ready or not self.db.receiveSounds or type(message) ~= "string" then return false end
-    local name = self:PeerName(sender)
-    if name == "" or name == self:PeerName(UnitName("player")) then return false end
+    if self:IsPlayerMuted(sender) then return false end
+    local name = self:PlayerIdentity(sender)
+    if not name or name == self:PlayerIdentity(UnitName("player")) then return false end
     local ids = self.soundByTitle[self:CleanPhrase(message)]
     if not ids then return false end
     self:PruneNetwork()
@@ -165,7 +163,7 @@ function A:HandleSayDiscovery(message, sender)
     for _, id in ipairs(ids) do
         local clip = self.clips[id]
         local nonce = self:Nonce()
-        self.pendingQueries[nonce] = { peer = name, id = id, at = now }
+        self.pendingQueries[nonce] = { peer = name, sender = self:PlayerIdentity(sender), id = id, at = now }
         self:SendPacket("Q|" .. id .. "|" .. nonce .. "|" .. clip.digest, "WHISPER", sender)
     end
     return true
@@ -174,8 +172,8 @@ end
 function A:HandleAddonSound(prefix, packet, channel, sender)
     if not self.ready or prefix ~= self.prefix or type(packet) ~= "string" or #packet > 230 then return false end
     if type(sender) ~= "string" or sender == "" then return false end
-    local name = self:PeerName(sender)
-    if name == self:PeerName(UnitName("player")) then return false end
+    local name = self:PlayerIdentity(sender)
+    if not name or name == self:PlayerIdentity(UnitName("player")) then return false end
     local kind, id, nonce, digest, query = string.match(packet, "^([PQR])|([a-z0-9_]+)|([a-zA-Z0-9_]+)|([a-f0-9]+)|?([a-zA-Z0-9_]*)$")
     if not kind or #nonce > 64 or #query > 64 or #digest ~= 16 then return false end
     local clip = self.clips[id]
@@ -203,11 +201,13 @@ function A:HandleAddonSound(prefix, packet, channel, sender)
     local key = name .. ":" .. nonce
     if self.seenPackets[key] then return false end
     self.seenPackets[key] = now
+    self:RememberSpeaker(sender, clip)
+    if self:IsPlayerMuted(sender) then return false end
     self.remoteUses[name] = self.remoteUses[name] or {}
     if self:SoundWait(self.remoteUses[name], now) > 0 then return false end
     if not self:CanQueueClip() then return false end
     table.insert(self.remoteUses[name], now)
-    return self:QueueClip(id, true)
+    return self:QueueClip(id, true, sender)
 end
 
 function A:CreateSoundSystem()
@@ -218,7 +218,8 @@ function A:CreateSoundSystem()
     self.soundFrame:SetScript("OnUpdate", function()
         if GetTime() < (A.soundBusyUntil or 0) then return end
         local nextClip = table.remove(A.soundQueue, 1)
-        while nextClip and (not A.clips[nextClip.id] or nextClip.remote and not A.db.receiveSounds) do nextClip = table.remove(A.soundQueue, 1) end
+        while nextClip and (not A.clips[nextClip.id] or nextClip.remote and
+            (not A.db.receiveSounds or A.db.mutedPlayers[nextClip.sender])) do nextClip = table.remove(A.soundQueue, 1) end
         if nextClip then A:PlayClipNow(nextClip.id) end
         if #A.soundQueue == 0 then A.soundFrame:Hide() end
     end)

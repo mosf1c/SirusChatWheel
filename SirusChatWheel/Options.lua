@@ -160,6 +160,7 @@ function A:RefreshOptions()
     for key, slider in pairs(sliders) do slider:SetValue(panel.draft[key]) end
     panel.loading = false
     panel.bindingText:SetText("Клавиша: " .. (GetBindingKey(self.binding) or "не назначена"))
+    self:RefreshPlayers()
 end
 
 function A:ApplyOptions()
@@ -167,6 +168,8 @@ function A:ApplyOptions()
     panel.draft.bindingInitialized = self.db.bindingInitialized
     panel.draft.previousY = self.db.previousY
     panel.draft.soundUses = self:Copy(type(self.db.soundUses) == "table" and self.db.soundUses or {})
+    -- Player mutes apply immediately, independently of the settings draft.
+    panel.draft.mutedPlayers = self:Copy(self.db.mutedPlayers)
     self.db = self:Normalize(panel.draft); SirusChatWheelDB = self.db
     self.cursorUnavailable, self.soundErrorPrinted, panel.defaultDraft = nil, nil, nil
     if picker then picker:Hide() end
@@ -180,22 +183,23 @@ function A:CreateOptions()
     Text(panel, "Нажми на фразу и выбери текст или голосовую запись.", 16, -42, 380)
     pages, selectors, listenButtons, checks, sliders = {}, {}, {}, {}, {}
     self.selectors = selectors
-    local tabs, titles = {}, { "Фразы", "Параметры", "Звуки" }
-    for i = 1, 3 do
+    local tabs, titles = {}, { "Фразы", "Параметры", "Звуки", "Игроки" }
+    self.optionTabs = tabs
+    for i = 1, #titles do
         pages[i] = CreateFrame("Frame", nil, panel)
         pages[i]:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -105)
         pages[i]:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -16, 54)
-        tabs[i] = Button(panel, titles[i], 112)
-        tabs[i]:SetPoint("TOPLEFT", panel, "TOPLEFT", 16 + (i - 1) * 120, -68)
+        tabs[i] = Button(panel, titles[i], 90)
+        tabs[i]:SetPoint("TOPLEFT", panel, "TOPLEFT", 16 + (i - 1) * 96, -68)
         local index = i
         tabs[i]:SetScript("OnClick", function()
-            for j = 1, 3 do
+            for j = 1, #titles do
                 if j == index then pages[j]:Show(); tabs[j]:Disable() else pages[j]:Hide(); tabs[j]:Enable() end
             end
             if picker then picker:Hide() end
         end)
     end
-    pages[2]:Hide(); pages[3]:Hide(); tabs[1]:Disable()
+    pages[2]:Hide(); pages[3]:Hide(); pages[4]:Hide(); tabs[1]:Disable()
     for i = 1, 8 do
         local index = i; local y = -(i - 1) * 31
         Text(pages[1], i .. ". " .. self.directions[i], 0, y - 6, 110)
@@ -235,9 +239,9 @@ function A:CreateOptions()
     bind:SetPoint("TOPRIGHT", pages[2], "TOPRIGHT", -3, -155)
     bind:SetScript("OnClick", function() A:BindY(false); panel.bindingText:SetText("Клавиша: " .. (GetBindingKey(A.binding) or "не назначена")) end)
     Text(pages[2], "Y заменит\nтекущее\nназначение.", 295, -188, 76, "GameFontDisableSmall")
-    Text(pages[3], "Свои голосовые записи", 0, 0, 370, "GameFontNormal")
-    Text(pages[3], "1. Положи WAV, MP3 или OGG в папку Sounds.\n\n2. Запусти Update-Sounds.cmd.\n\n3. В игре выполни /reload и выбери запись на вкладке «Фразы».\n\nStart-ChatWheel.cmd обновляет каталог перед запуском игры и следит за папкой до закрытия клиента.", 0, -30, 365)
-    Text(pages[3], "Удалённая или переименованная запись после обновления каталога оставляет пустой слот.\n\nЛимит отправки: 2 звука за 30 с. У других игроков должен быть такой же файл.", 0, -182, 365, "GameFontDisableSmall")
+    Text(pages[3], "Голосовые записи", 0, 0, 370, "GameFontNormal")
+    Text(pages[3], "Все звуки уже входят в полный архив аддона.\n\nЧтобы получить новые записи, закрой игру и скопируй папку SirusChatWheel из нового выпуска в Interface\\AddOns с заменой файлов.\n\nПосле запуска игры выбери новую запись на вкладке «Фразы».", 0, -30, 365)
+    Text(pages[3], "Настройки секторов сохраняются в WTF. Запись, исключённая из нового выпуска, оставляет пустой слот.\n\nЛимит: 2 звука за 30 с. Для совместного воспроизведения у игроков должны быть одинаковые файлы.", 0, -182, 365, "GameFontDisableSmall")
     local apply = Button(panel, "Сохранить", 115)
     apply:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 14); apply:SetScript("OnClick", function() A:ApplyOptions() end)
     local preview = Button(panel, "Проверить колесо", 145)
@@ -256,6 +260,7 @@ function A:CreateOptions()
         panel.defaultDraft = A:Normalize(defaults); A:RefreshOptions()
     end
     panel:SetScript("OnHide", function() if picker then picker:Hide() end end)
+    self:CreatePlayersPage(pages[4])
     self:CreatePicker(); self:RefreshOptions(); InterfaceOptions_AddCategory(panel)
 end
 

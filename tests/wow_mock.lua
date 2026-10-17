@@ -27,6 +27,10 @@ function methods:GetEffectiveScale() return self.scale end
 function methods:GetFont() return self.font or "mock.ttf", self.size or 16, "" end
 function methods:SetFont(font, size) self.font, self.size = font, size end
 function methods:SetText(text) self.text = text end
+function methods:GetText() return self.text or "" end
+function methods:SetAutoFocus(value) self.autoFocus = value end
+function methods:SetMaxLetters(value) self.maxLetters = value end
+function methods:ClearFocus() focus = nil end
 function methods:SetTexture(...) self.texture = {...} end
 function methods:SetPoint(...) self.points[#self.points + 1] = {...} end
 function methods:ClearAllPoints() self.points = {} end
@@ -97,6 +101,7 @@ function GetCursorPosition() return cursorX, cursorY end
 function GetCurrentKeyBoardFocus() return focus end
 function InCombatLockdown() return combat end
 function UnitName(unit) return unit == "player" and player or "Receiver" end
+function GetRealmName() return "Sirus" end
 function GetNumRaidMembers() return raid and 2 or 0 end
 function GetRaidRosterInfo(i) return i == 1 and "Sender" or "Receiver" end
 function GetNumPartyMembers() return 0 end

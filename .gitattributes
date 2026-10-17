@@ -1,2 +1,7 @@
-# Auto detect text files and perform LF normalization
+# Keep source text normalized and audio/texture bytes unchanged.
 * text=auto
+*.[wW][aA][vV] binary
+*.[mM][pP]3 binary
+*.[oO][gG][gG] binary
+*.[tT][gG][aA] binary
+*.[bB][lL][pP] binary

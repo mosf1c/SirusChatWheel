@@ -1,4 +1,4 @@
-﻿param([switch]$Watch, [switch]$LaunchGame, [string]$GamePath = '')
+﻿param([switch]$Watch, [switch]$LaunchGame, [string]$GamePath = '', [switch]$SkipCatalogUpdate)
 $ErrorActionPreference = 'Stop'
 $addonRoot = $PSScriptRoot
 $sourceRoot = Join-Path $addonRoot 'Sounds'
@@ -147,7 +147,8 @@ function Update-Catalog {
 }
 
 try {
-    Update-Catalog
+    if (-not $SkipCatalogUpdate) { Update-Catalog }
+    elseif (-not (Test-Path -LiteralPath $catalogPath)) { throw 'The release catalog is missing. Extract the complete addon ZIP.' }
     $gameProcess = $null
     if ($LaunchGame) {
         if (-not $GamePath) {

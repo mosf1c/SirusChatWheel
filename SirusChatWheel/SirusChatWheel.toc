@@ -3,12 +3,13 @@
 ## Notes: Hold Y, move the mouse, release to send a chat phrase. WoW 3.3.5a.
 ## Notes-ruRU: Колесо чата: удерживай Y, выбери фразу мышью, отпусти для отправки.
 ## Author: Maxim / Codex
-## Version: 1.2.4
+## Version: 1.4.0
 ## SavedVariables: SirusChatWheelDB
 
 Catalog.lua
 UpdateStatus.lua
 Core.lua
+Players.lua
 Sounds.lua
 Wheel.lua
 Options.lua
