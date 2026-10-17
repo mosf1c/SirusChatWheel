@@ -1,7 +1,7 @@
 -- WoW 3.3.5a / Lua 5.1. No runtime libraries required.
 SirusChatWheel = {}
 local A = SirusChatWheel
-A.version = "1.4.0"
+A.version = "1.5.0"
 A.binding = "SIRUSCHATWHEEL_HOLD"
 A.media = "Interface\\AddOns\\SirusChatWheel\\Media\\"
 A.speakerMarkup = "|T" .. A.media .. "Speaker.tga:18:18:0:0|t "

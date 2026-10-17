@@ -112,7 +112,7 @@ function A:SendSound(id)
     table.insert(self.recentSoundActions, action)
     table.insert(self.db.soundUses, now)
     -- The name remains visible; playback requires a separate hidden command.
-    local ok, err = pcall(SendChatMessage, clip.title, channel)
+    local ok, err = pcall(SendChatMessage, "<" .. clip.title .. ">", channel)
     if not ok then
         table.remove(self.db.soundUses)
         table.remove(self.recentSoundActions)
@@ -149,7 +149,11 @@ function A:HandleSayDiscovery(message, sender)
     if self:IsPlayerMuted(sender) then return false end
     local name = self:PlayerIdentity(sender)
     if not name or name == self:PlayerIdentity(UnitName("player")) then return false end
-    local ids = self.soundByTitle[self:CleanPhrase(message)]
+    local text = self:CleanPhrase(message)
+    -- Accept the bracketed chat format and names sent by earlier versions.
+    -- Neither format can play audio without a matching hidden confirmation.
+    local title = string.match(text, "^<(.*)>$")
+    local ids = self.soundByTitle[text] or title and self.soundByTitle[title]
     if not ids then return false end
     self:PruneNetwork()
     local now = GetTime()

@@ -203,6 +203,48 @@ def test_player_mutes():
         check(len(list(restored.a.db.mutedPlayers.items())) == 1, "malformed saved mute entries are discarded")
 
 
+def test_sound_messages():
+    c = Client()
+    expected = {"OldGod.wav": "Старый Бог", "Ambulance.wav": "Скорую! Скорую! ВРАЧА!",
+        "NoExcuses.wav": "Да нет, друг, я не оправдываюсь"}
+    clips = {clip.filename: clip for _, clip in c.a.soundList.items()}
+    for filename, title in expected.items():
+        check(filename in clips and clips[filename].title == title, "new recording and exact Russian title: " + filename)
+    for channel in ("RAID", "SAY"):
+        for clip in clips.values():
+            sender, receiver = Client(), Client("Receiver")
+            sender.a.db.channel = channel
+            check(sender.call("SendSound", clip.id), "voice send accepted: " + channel + " " + clip.filename)
+            chat = sender.events("chat")[0]
+            check(chat[1] == "<" + clip.title + ">" and chat[2] == channel,
+                "chat wraps the complete voice title in angle brackets: " + channel + " " + clip.filename)
+            check(len(chat[1].encode("utf-8")) <= 255, "bracketed voice title fits the chat byte limit")
+            if channel == "SAY":
+                receiver.call("HandleSayDiscovery", chat[1], "Sender")
+                check(not receiver.events("play"), "bracketed say message waits for hidden confirmation")
+                pump(receiver, sender)
+            pump(sender, receiver)
+            check(len(receiver.events("play")) == 1, "bracketed message still synchronizes audio: " + channel + " " + clip.filename)
+    # Older senders use bare titles; the hidden Q/R protocol remains compatible.
+    sender, receiver = Client(), Client("Receiver")
+    clip = sender.a.soundList[1]
+    sender.a.db.channel = "SAY"
+    sender.call("SendSound", clip.id)
+    check(receiver.call("HandleSayDiscovery", clip.title, "Sender"), "legacy bare title is recognized")
+    pump(receiver, sender)
+    pump(sender, receiver)
+    check(len(receiver.events("play")) == 1, "legacy bare title still requires and accepts hidden confirmation")
+    sender, receiver = Client(), Client("Receiver")
+    receiver.call("HandleSayDiscovery", "<" + clip.title + ">", "Sender")
+    pump(receiver, sender)
+    pump(sender, receiver)
+    check(not receiver.events("play"), "typing a bracketed title alone cannot trigger playback")
+    receiver.call("SetPlayerMuted", "Sender", True)
+    receiver.log.clear()
+    check(not receiver.call("HandleSayDiscovery", "<" + clip.title + ">", "Sender") and not receiver.events("packet"),
+        "mute blocks bracketed say discovery without a query")
+
+
 def test_limits_and_network():
     c, r = Client(), Client("Receiver")
     sid = c.a.soundList[1].id
@@ -526,7 +568,7 @@ if __name__ == "__main__":
         run_catalog(ADDON)
     if not (ADDON / "UpdateStatus.lua").exists():
         (ADDON / "UpdateStatus.lua").write_text("SirusChatWheelUpdateStatus = {}\n", encoding="utf-8")
-    for test in (test_base, test_player_mutes, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_full_release_copy):
+    for test in (test_base, test_player_mutes, test_sound_messages, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_full_release_copy):
         try:
             test()
         except Exception as error:
