@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag, for example v1.4.0
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -20,12 +26,14 @@ jobs:
       contents: write
     env:
       PYTHONUTF8: '1'
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -37,7 +45,7 @@ jobs:
           $match = [regex]::Match($toc, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$')
           if (!$match.Success) { throw 'Missing addon version' }
           $version = $match.Groups[1].Value
-          if ($env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag and addon version differ' }
+          if ($env:RELEASE_TAG -cne "v$version") { throw 'Tag and addon version differ' }
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Install Lua 5.1 test runtime
         run: python -m pip install lupa==2.8
@@ -50,8 +58,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create $env:GITHUB_REF_NAME "dist/SirusChatWheel-$env:RELEASE_VERSION.zip" --verify-tag --draft --title "SirusChatWheel $env:RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+          gh release create $env:RELEASE_TAG "dist/SirusChatWheel-$env:RELEASE_VERSION.zip" --verify-tag --draft --title "SirusChatWheel $env:RELEASE_VERSION" --notes-file RELEASE_NOTES.md
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+        run: gh release edit $env:RELEASE_TAG --draft=false --latest
