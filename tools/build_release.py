@@ -1,4 +1,4 @@
-"""Build one complete ZIP, including every publisher-supplied sound."""
+"""Build one complete playable ZIP with a single copy of each sound."""
 import json
 import os
 from pathlib import Path
@@ -14,6 +14,7 @@ DIST = ROOT / "dist"
 FILES = ["Bindings.xml", "Core.lua", "Init.lua", "Players.lua", "Sounds.lua", "Wheel.lua", "Options.lua", "Updates.lua",
     "SirusChatWheel.toc", "SoundCatalog.ps1", "Check-Updates.ps1", "Check-Updates.cmd", "Update-Sounds.cmd",
     "Watch-Sounds.cmd", "Start-ChatWheel.cmd", "README_RU.txt", "TEST_REPORT_RU.txt", "SoundNames.json"]
+AUTHOR_ONLY = {"SoundNames.json", "Update-Sounds.cmd", "Watch-Sounds.cmd"}
 
 
 def source_files():
@@ -45,11 +46,15 @@ def build():
         catalog = (stage / "Catalog.lua").read_text(encoding="utf-8-sig")
         if catalog.count('  { id = ') != audio_count:
             raise RuntimeError("Some sound files were not added to the release catalog")
+        (stage / "ReleaseInfo.json").write_text(json.dumps({"version": version, "readyCatalog": True}) + "\n", encoding="utf-8")
         path = DIST / f"SirusChatWheel-{version}.zip"
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for file in sorted(stage.rglob("*")):
                 if file.is_file():
-                    archive.write(file, "SirusChatWheel/" + file.relative_to(stage).as_posix())
+                    relative = file.relative_to(stage)
+                    if relative.parts[0] == "Sounds" or relative.as_posix() in AUTHOR_ONLY:
+                        continue
+                    archive.write(file, "SirusChatWheel/" + relative.as_posix())
         print(path)
     return path
 

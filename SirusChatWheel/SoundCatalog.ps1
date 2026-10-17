@@ -147,6 +147,9 @@ function Update-Catalog {
 }
 
 try {
+    if (-not $SkipCatalogUpdate -and (Test-Path -LiteralPath (Join-Path $addonRoot 'ReleaseInfo.json'))) {
+        throw 'This is a ready-to-play release. Add sounds in the source repository and build a new complete ZIP; do not rebuild the installed catalog.'
+    }
     if (-not $SkipCatalogUpdate) { Update-Catalog }
     elseif (-not (Test-Path -LiteralPath $catalogPath)) { throw 'The release catalog is missing. Extract the complete addon ZIP.' }
     $gameProcess = $null

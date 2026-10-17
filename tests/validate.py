@@ -245,6 +245,67 @@ def test_sound_messages():
         "mute blocks bracketed say discovery without a query")
 
 
+def test_bounded_history():
+    c = Client("Receiver")
+    sid = c.a.soundList[1].id
+    digest = c.a.clips[sid].digest
+    c.lua.execute('refreshCount=0; local original=SirusChatWheel.RefreshPlayers; SirusChatWheel.RefreshPlayers=function(self) refreshCount=refreshCount+1; return original(self) end')
+    for i in range(300):
+        c.call("HandleAddonSound", c.a.prefix, f"P|{sid}|burst_{i}|{digest}", "RAID", "Sender")
+    check(len(list(c.a.seenPackets.items())) == 2 and len(c.a.seenPacketOrder) == 2, "300 commands retain only two accepted playback tokens")
+    check(c.g.refreshCount == 2, "rate-limited commands do not refresh player UI")
+    check(len(c.a.remoteUses["sender-sirus"]) == 2, "history optimization preserves two sounds per rolling 30 seconds")
+    check(not c.call("HandleAddonSound", c.a.prefix, f"P|{sid}|burst_0|{digest}", "RAID", "Sender"), "accepted command remains protected from replay")
+    c.tick(61)
+    c.call("PruneNetwork")
+    check(not list(c.a.seenPackets.items()) and not list(c.a.seenPacketPeers.items()) and len(c.a.seenPacketOrder) == 0, "minute-old history and peer counters expire together")
+    check(c.call("HandleAddonSound", c.a.prefix, f"P|{sid}|after_expiry|{digest}", "RAID", "Sender"), "new sound works after history expiration")
+    muted = Client("Receiver")
+    muted.call("SetPlayerMuted", "Sender", True)
+    muted.lua.execute('refreshCount=0; SirusChatWheel.RefreshPlayers=function() refreshCount=refreshCount+1 end')
+    for i in range(300):
+        muted.call("HandleAddonSound", muted.a.prefix, f"P|{sid}|muted_{i}|{digest}", "RAID", "Sender")
+    check(len(muted.a.seenPacketOrder) == muted.a.networkLimits.mutedPerPeer and not muted.events("play"), "muted sender cannot fill history or play audio")
+    check(muted.g.refreshCount == 0, "muted command bursts do not refresh UI")
+    muted.call("SetPlayerMuted", "Sender", False)
+    check(muted.call("HandleAddonSound", muted.a.prefix, f"P|{sid}|unmuted_fresh|{digest}", "RAID", "Sender"), "muted burst reserves room for immediate unmute")
+    full = Client("Receiver")
+    full.call("PruneNetwork")
+    count = full.a.networkLimits.seen
+    for i in range(count):
+        full.call("RememberPacket", "key" + str(i), "peer" + str(i), full.g.now)
+    check(len(full.a.seenPacketOrder) == count and len(list(full.a.seenPackets.items())) == count, "global packet history has a fixed capacity")
+    check(not full.call("RememberPacket", "overflow", "another", full.g.now), "full history rejects new tokens without discarding live replay protection")
+    check(full.a.seenPackets["key0"] is not None, "oldest live token survives history overflow")
+    full.tick(61)
+    full.call("PruneNetwork")
+    check(full.call("RememberPacket", "overflow", "another", full.g.now), "expired history releases capacity")
+    per_peer = Client("Receiver")
+    per_peer.call("PruneNetwork")
+    for i in range(30):
+        per_peer.call("RememberPacket", "peer_key" + str(i), "one_peer", per_peer.g.now)
+    check(len(per_peer.a.seenPacketOrder) == per_peer.a.networkLimits.seenPerPeer, "one sender has a separate history cap")
+    waiting = Client("Receiver")
+    title = waiting.a.soundList[1].title
+    for i in range(100):
+        name = "Nearby" + chr(65 + i // 26) + chr(65 + i % 26)
+        waiting.call("HandleSayDiscovery", "<" + title + ">", name)
+    check(len(list(waiting.a.pendingQueries.items())) <= waiting.a.networkLimits.pending, "say confirmation queue is bounded across senders")
+    check(len(list(waiting.a.queryThrottle.items())) <= waiting.a.networkLimits.peers, "say sender tracking has a fixed capacity")
+    waiting.tick(9)
+    waiting.call("PruneNetwork")
+    check(not list(waiting.a.pendingQueries.items()) and not list(waiting.a.queryThrottle.items()), "expired say tracking releases all capacity")
+    speaker = Client()
+    speaker.a.db.channel = "SAY"
+    speaker.call("SendSound", sid)
+    for i in range(100):
+        name = "Nearby" + chr(65 + i // 26) + chr(65 + i % 26)
+        speaker.call("HandleAddonSound", speaker.a.prefix, f"Q|{sid}|ask_{i}|{digest}", "WHISPER", name)
+    action = speaker.a.recentSoundActions[1]
+    check(len(list(action.requests.items())) == speaker.a.networkLimits.peers and len(speaker.events("packet")) == speaker.a.networkLimits.peers,
+        "outbound confirmation recipients and responses are bounded")
+
+
 def test_limits_and_network():
     c, r = Client(), Client("Receiver")
     sid = c.a.soundList[1].id
@@ -481,10 +542,15 @@ def test_full_release_copy():
             check(not any("Install." in name for name in archive.namelist()), "release requires no installer")
             check("SirusChatWheel/Catalog.lua" in archive.namelist(), "ready catalog is included")
             check(not any("UpdateConfig.json" in name for name in archive.namelist()), "release excludes local GitHub configuration")
+            check(not any(name.startswith("SirusChatWheel/Sounds/") for name in archive.namelist()), "player ZIP excludes duplicate author audio")
+            check(not any(name in archive.namelist() for name in ["SirusChatWheel/SoundNames.json", "SirusChatWheel/Update-Sounds.cmd", "SirusChatWheel/Watch-Sounds.cmd"]), "author names and catalog helpers stay in source checkout")
+            check("SirusChatWheel/ReleaseInfo.json" in archive.namelist(), "player package identifies its ready catalog")
+            check(sum(name.startswith("SirusChatWheel/Media/Cache/") for name in archive.namelist()) == BASE_SOUND_COUNT, "player ZIP has one ready file per sound")
             archive.extractall(addons)
         target = addons / "SirusChatWheel"
         c = Client(root=target)
         check(c.a.ready and len(c.a.soundList) == BASE_SOUND_COUNT, "fresh user installs by copying without running scripts")
+        check(not (target / "Sounds").exists(), "fresh installation contains no second audio folder")
         cat, dog = c.a.soundByFile["cat.wav"], c.a.soundByFile["dog.wav"]
         saved = game / "WTF/Account/example/SavedVariables/SirusChatWheel.lua"
         saved.parent.mkdir(parents=True)
@@ -494,6 +560,10 @@ def test_full_release_copy():
         saved_bytes = saved.read_bytes()
         config = target / "UpdateConfig.json"
         config.write_bytes(b'{"repository":"user/repo"}')
+        # Reproduce legacy files left by copying over a release from before 1.5.1.
+        (target / "Sounds").mkdir()
+        shutil.copy2(source / "Sounds/Dog.wav", target / "Sounds/Dog.wav")
+        (target / "Update-Sounds.cmd").write_text("legacy helper", encoding="utf-8")
         # The author changes a sound in place and adds two new sounds to the next ZIP.
         def wav(path, byte):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -515,7 +585,8 @@ def test_full_release_copy():
         release = builder.build()
         check((source / "SoundNames.json").read_bytes() == names_bytes, "build preserves publisher names")
         with zipfile.ZipFile(release) as archive:
-            check("SirusChatWheel/Sounds/" + new_wav in archive.namelist() and "SirusChatWheel/Sounds/" + new_mp3 in archive.namelist(), "all newly added publisher WAV and MP3 files enter the ZIP")
+            check(sum(name.startswith("SirusChatWheel/Media/Cache/") for name in archive.namelist()) == BASE_SOUND_COUNT + 2, "new publisher WAV and MP3 files enter the ZIP once as ready cache")
+            check(not any(name.startswith("SirusChatWheel/Sounds/") for name in archive.namelist()), "updates do not reintroduce duplicate audio sources")
             check(not any("ignore.exe" in name for name in archive.namelist()), "non-audio files are excluded")
             archive.extractall(addons)  # Ordinary copy with replacement; no helper runs.
         c = Client(root=target, saved_path=saved)
@@ -559,6 +630,21 @@ def test_full_release_copy():
         launched = subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper)], capture_output=True, env=env)
         check(launched.returncode == 0, "optional launch helper uses the packaged catalog")
         check((target / "Catalog.lua").read_bytes() == catalog_bytes, "launching cannot restore excluded old audio into the catalog")
+        blocked = subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(target / "SoundCatalog.ps1")], capture_output=True, env=env)
+        check(blocked.returncode != 0, "legacy catalog rebuild helper is blocked inside ready player package")
+        check((target / "Catalog.lua").read_bytes() == catalog_bytes, "legacy source leftovers cannot replace the ready release catalog")
+        # A one-time clean folder replacement removes legacy duplicates while
+        # account settings stay outside AddOns and load into the new package.
+        legacy = (game / "old-addon").resolve()
+        check(target.resolve().is_relative_to(addons.resolve()) and legacy.is_relative_to(game.resolve()), "clean replacement paths stay inside the temporary test game")
+        target.rename(legacy)
+        with zipfile.ZipFile(release) as archive:
+            archive.extractall(addons)
+        clean = Client(root=target, saved_path=saved)
+        check(clean.a.ready and not (target / "Sounds").exists(), "clean replacement removes old source audio folder")
+        check(clean.a.db.slots[1].id == cat and clean.a.db.slots[2].text == "KEEP" and clean.a.db.slots[3].kind == "empty", "clean replacement restores sector assignments and excludes removed sound")
+        check(clean.call("IsPlayerMuted", "Sender") and len(clean.a.db.soundUses) == 2, "clean replacement restores mutes and rate limit")
+        check(saved.read_bytes() == saved_bytes and clean.a.db.channel == "SAY", "clean replacement leaves WTF file and channel intact")
 
 
 if __name__ == "__main__":
@@ -568,7 +654,7 @@ if __name__ == "__main__":
         run_catalog(ADDON)
     if not (ADDON / "UpdateStatus.lua").exists():
         (ADDON / "UpdateStatus.lua").write_text("SirusChatWheelUpdateStatus = {}\n", encoding="utf-8")
-    for test in (test_base, test_player_mutes, test_sound_messages, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_full_release_copy):
+    for test in (test_base, test_player_mutes, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_full_release_copy):
         try:
             test()
         except Exception as error:

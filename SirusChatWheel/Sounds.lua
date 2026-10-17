@@ -1,5 +1,12 @@
 local A = SirusChatWheel
 A.prefix = "SCW12"
+A.networkLimits = { seen = 256, seenPerPeer = 8, mutedPerPeer = 4, peers = 64, pending = 64 }
+
+local function Count(entries)
+    local count = 0
+    for _ in pairs(entries) do count = count + 1 end
+    return count
+end
 
 function A:LoadCatalog()
     self.clips, self.soundList, self.soundByFile, self.soundByTitle = {}, {}, {}, {}
@@ -128,10 +135,20 @@ function A:PruneNetwork()
     local now = GetTime()
     self.pendingQueries = self.pendingQueries or {}
     self.seenPackets = self.seenPackets or {}
+    self.seenPacketOrder = self.seenPacketOrder or {}
+    self.seenPacketPeers = self.seenPacketPeers or {}
     self.remoteUses = self.remoteUses or {}
     self.queryThrottle = self.queryThrottle or {}
     for key, value in pairs(self.pendingQueries) do if now - value.at > 6 then self.pendingQueries[key] = nil end end
-    for key, value in pairs(self.seenPackets) do if now - value > 60 then self.seenPackets[key] = nil end end
+    for i = #self.seenPacketOrder, 1, -1 do
+        local entry = self.seenPacketOrder[i]
+        if now - entry.at >= 60 then
+            self.seenPackets[entry.key] = nil
+            local remaining = (self.seenPacketPeers[entry.peer] or 1) - 1
+            self.seenPacketPeers[entry.peer] = remaining > 0 and remaining or nil
+            table.remove(self.seenPacketOrder, i)
+        end
+    end
     for key, value in pairs(self.queryThrottle) do
         if now - (value[#value] or 0) > 8 then self.queryThrottle[key] = nil end
     end
@@ -142,6 +159,17 @@ function A:PruneNetwork()
         self:SoundWait(value, now)
         if #value == 0 then self.remoteUses[key] = nil end
     end
+end
+
+function A:RememberPacket(key, peer, now)
+    -- Keep live deduplication entries until they expire. When full, reject a
+    -- new command rather than evicting a command that could still be replayed.
+    if self.seenPackets[key] or #self.seenPacketOrder >= self.networkLimits.seen or
+        (self.seenPacketPeers[peer] or 0) >= self.networkLimits.seenPerPeer then return false end
+    self.seenPackets[key] = now
+    self.seenPacketPeers[peer] = (self.seenPacketPeers[peer] or 0) + 1
+    table.insert(self.seenPacketOrder, { key = key, peer = peer, at = now })
+    return true
 end
 
 function A:HandleSayDiscovery(message, sender)
@@ -157,6 +185,8 @@ function A:HandleSayDiscovery(message, sender)
     if not ids then return false end
     self:PruneNetwork()
     local now = GetTime()
+    if Count(self.pendingQueries) >= self.networkLimits.pending then return false end
+    if not self.queryThrottle[name] and Count(self.queryThrottle) >= self.networkLimits.peers then return false end
     local queries = self.queryThrottle[name] or {}
     for i = #queries, 1, -1 do if now - queries[i] >= 1 then table.remove(queries, i) end end
     if #queries >= 2 then return false end
@@ -165,6 +195,7 @@ function A:HandleSayDiscovery(message, sender)
     -- This query cannot play a sound. The speaker must confirm a recent accepted
     -- wheel action with a hidden response matching both clip and query nonce.
     for _, id in ipairs(ids) do
+        if Count(self.pendingQueries) >= self.networkLimits.pending then break end
         local clip = self.clips[id]
         local nonce = self:Nonce()
         self.pendingQueries[nonce] = { peer = name, sender = self:PlayerIdentity(sender), id = id, at = now }
@@ -187,8 +218,10 @@ function A:HandleAddonSound(prefix, packet, channel, sender)
     if kind == "Q" then
         if channel ~= "WHISPER" or query ~= "" then return false end
         for _, action in ipairs(self.recentSoundActions or {}) do
-            if action.channel == "SAY" and action.id == id and not action.requests[name] then
+            if action.channel == "SAY" and action.id == id and not action.requests[name] and
+                (action.requestCount or 0) < self.networkLimits.peers then
                 action.requests[name] = true
+                action.requestCount = (action.requestCount or 0) + 1
                 return self:SendPacket("R|" .. id .. "|" .. action.nonce .. "|" .. digest .. "|" .. nonce, "WHISPER", sender)
             end
         end
@@ -204,14 +237,22 @@ function A:HandleAddonSound(prefix, packet, channel, sender)
     end
     local key = name .. ":" .. nonce
     if self.seenPackets[key] then return false end
-    self.seenPackets[key] = now
-    self:RememberSpeaker(sender, clip)
-    if self:IsPlayerMuted(sender) then return false end
+    if self:IsPlayerMuted(sender) then
+        -- Reserve space for new legitimate sounds after the player is unmuted.
+        if (self.seenPacketPeers[name] or 0) < self.networkLimits.mutedPerPeer then
+            self:RememberPacket(key, name, now)
+        end
+        return false
+    end
+    if not self.remoteUses[name] and Count(self.remoteUses) >= self.networkLimits.peers then return false end
     self.remoteUses[name] = self.remoteUses[name] or {}
     if self:SoundWait(self.remoteUses[name], now) > 0 then return false end
     if not self:CanQueueClip() then return false end
+    if not self:RememberPacket(key, name, now) then return false end
     table.insert(self.remoteUses[name], now)
-    return self:QueueClip(id, true, sender)
+    local queued = self:QueueClip(id, true, sender)
+    if queued then self:RememberSpeaker(sender, clip) end
+    return queued
 end
 
 function A:CreateSoundSystem()

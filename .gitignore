@@ -9,6 +9,7 @@
 /SirusChatWheel/Media/Cache/
 /SirusChatWheel/UpdateConfig.json
 /SirusChatWheel/UpdateStatus.lua
+/SirusChatWheel/ReleaseInfo.json
 *.tmp
 
 # Sounds and SoundNames.json belong to the publisher and are versioned.

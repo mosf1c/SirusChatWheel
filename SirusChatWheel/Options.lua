@@ -251,6 +251,9 @@ function A:CreateOptions()
     panel.status:ClearAllPoints(); panel.status:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 43)
     panel.bindingText = Text(panel, "", 0, 0, 380, "GameFontDisableSmall")
     panel.bindingText:ClearAllPoints(); panel.bindingText:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 0)
+    local credit = Text(panel, "by mosf1c", 0, 0, 100, "GameFontDisableSmall")
+    credit:ClearAllPoints(); credit:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -16, 0)
+    credit:SetJustifyH("RIGHT")
     panel.okay = function() A:ApplyOptions() end
     panel.cancel = function() panel.defaultDraft = nil; A:RefreshOptions(); panel.status:SetText("") end
     panel.refresh = function() A:RefreshOptions(); panel.status:SetText("") end
