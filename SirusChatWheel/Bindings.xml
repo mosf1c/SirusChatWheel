@@ -1,0 +1,7 @@
+<Bindings>
+    <Binding name="SIRUSCHATWHEEL_HOLD" header="SIRUSCHATWHEEL" runOnUp="true">
+        if SirusChatWheel then
+            SirusChatWheel:HandleKey(keystate);
+        end
+    </Binding>
+</Bindings>
