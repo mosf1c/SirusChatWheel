@@ -7,6 +7,10 @@ local function VersionParts(value)
     return tonumber(major), tonumber(minor), tonumber(patch)
 end
 
+function A:IsValidVersion(value)
+    return VersionParts(value) ~= nil
+end
+
 function A:IsNewerVersion(candidate, installed)
     local a, b, c = VersionParts(candidate)
     local x, y, z = VersionParts(installed)
@@ -17,6 +21,7 @@ function A:IsNewerVersion(candidate, installed)
 end
 
 function A:ShowUpdateStatus(automatic)
+    if automatic and self.updateNoticePrinted then return false end
     local status = SirusChatWheelUpdateStatus
     if type(status) ~= "table" or not status.repository or status.repository == "" then
         if not automatic then self:Print("Проверка GitHub: запустите Check-Updates.cmd в папке аддона и выполните /reload.") end
@@ -40,6 +45,7 @@ function A:ShowUpdateStatus(automatic)
     if automatic and not newer then return false end
     local checked = date and date("%d.%m.%Y %H:%M", at) or tostring(at)
     if newer then
+        if automatic then self.updateNoticePrinted = true end
         self:Print("Доступна версия " .. status.version .. " (у вас " .. self.version .. "). Проверено: " .. checked .. ".")
         self:Print("https://github.com/" .. repository .. "/releases/latest — скопируйте папку из архива в Interface\\AddOns с заменой файлов.")
     else

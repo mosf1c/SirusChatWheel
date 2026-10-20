@@ -62,7 +62,7 @@ def pump(sender, receiver):
     messages = sender.events("packet")[:]
     sender.log[:] = [event for event in sender.log if event[0] != "packet"]
     for _, prefix, packet, channel, target in messages:
-        receiver.call("HandleAddonSound", prefix, packet, channel, sender.g.player)
+        receiver.g.FireEvent("CHAT_MSG_ADDON", prefix, packet, channel, sender.g.player)
 
 
 def test_base():
@@ -70,9 +70,9 @@ def test_base():
     check(c.lua.eval("_VERSION") == "Lua 5.1", "real Lua 5.1 runtime")
     check(c.a.ready and len(c.a.soundList) == BASE_SOUND_COUNT, "TOC startup and all bundled sounds")
     check(c.g.binding == c.a.binding, "first login binds Y")
-    check(len(c.a.textChoices) == 12, "12 text choices")
+    check(len(c.a.textChoices) == 14, "14 text choices")
     entries = c.call("BuildPickerEntries")
-    check(entries[2].kind == "text" and entries[13].kind == "text" and entries[15].kind == "sound", "picker order")
+    check(entries[2].kind == "text" and entries[15].kind == "text" and entries[17].kind == "sound", "picker order")
     directions = [(0, 100), (100, 100), (100, 0), (100, -100), (0, -100), (-100, -100), (-100, 0), (-100, 100)]
     for i, (dx, dy) in enumerate(directions, 1):
         check(c.call("GetSector", dx, dy, 16) == i, f"sector {i}")
@@ -129,7 +129,7 @@ def test_player_mutes():
     c.tick(10)
     check(len(c.events("play")) == before and not c.events("chat"), "mute adds no chat and no delayed playback")
     check(not c.call("HandleSayDiscovery", c.a.clips[sid].title, "Sender"), "muted say title sends no discovery query")
-    check(not c.events("packet"), "muting does not create outgoing network traffic")
+    check(not any(p[1] == c.a.prefix for p in c.events("packet")), "muting does not create outgoing sound traffic")
     # Settings drafts, defaults and Cancel cannot undo immediate player mutes.
     c.call("ApplyOptions")
     c.a.options.cancel()
@@ -393,7 +393,7 @@ def test_delayed_say():
     r.tick(2)
     r.call("HandleSayDiscovery", c.a.clips[sid].title, "Sender")
     pump(r, c)
-    check(not c.events("packet"), "expired SAY actions cannot confirm manual chat")
+    check(not any(p[1] == c.a.prefix for p in c.events("packet")), "expired SAY actions cannot confirm manual chat")
 
 
 def test_send_failure():
@@ -517,6 +517,121 @@ def test_updates():
         release["tag_name"], release["prerelease"] = "v1.3.0", False
         check(invoke(release, repository=None, expected_repository="mosf1c/SirusChatWheel").returncode == 0, "fresh install checks the publisher repository without configuration")
         check(not (addon / "UpdateConfig.json").exists(), "default repository needs no user configuration file")
+
+
+def test_peer_versions():
+    def packets(c, kind=None):
+        return [p for p in c.events("packet") if p[1] == c.a.versionPrefix and (kind is None or p[2].startswith(kind + "|"))]
+
+    def receive(c, version, sender="Receiver", channel="RAID", kind="V"):
+        c.g.FireEvent("CHAT_MSG_ADDON", c.a.versionPrefix, kind + "|" + version, channel, sender)
+
+    c = Client()
+    c.tick(5)
+    check(len(packets(c, "Q")) == 1 and packets(c)[0][3] == "RAID", "login queries peer versions after startup")
+    check(not c.a.versionFrame.IsShown(c.a.versionFrame), "version timer sleeps when idle")
+    c.g.guild = True
+    for _ in range(20):
+        c.g.FireEvent("RAID_ROSTER_UPDATE")
+        c.g.FireEvent("PLAYER_GUILD_UPDATE", "player")
+    c.tick(5)
+    check(len(packets(c, "Q")) == 2 and packets(c)[-1][3] == "GUILD", "roster bursts coalesce and query only a new channel")
+    c.g.raid = False
+    c.g.partyRoster = c.lua.table_from(["Receiver"])
+    c.g.FireEvent("PARTY_MEMBERS_CHANGED")
+    c.tick(5)
+    check(packets(c)[-1][3] == "PARTY", "party discovery uses PARTY outside a raid")
+    c.g.FireEvent("PLAYER_ENTERING_WORLD")
+    c.tick(5)
+    check(len(packets(c, "Q")) == 3, "repeated world and roster events respect the query cooldown")
+    receive(c, "1.7.0", channel="PARTY")
+    c.tick(4)
+    check(c.a.updateNoticePrinted and c.a.versionState.latest.sender == "Receiver", "a current party member can announce a newer version")
+
+    c = Client()
+    c.log.clear()
+    for version, sender, channel in [("9.0.0", "Outsider", "RAID"), ("9.0.0", "Receiver", "WHISPER"),
+            ("9.0.0", "Receiver", "GUILD"), ("9.0.0", "Sender", "RAID"),
+            ("1.6.0-beta", "Receiver", "RAID"), ("9.0.0|extra", "Receiver", "RAID"),
+            ("9.0.0\n", "Receiver", "RAID"), ("999999999999999.0.0", "Receiver", "RAID")]:
+        receive(c, version, sender, channel)
+    c.g.FireEvent("CHAT_MSG_ADDON", "wrong", "V|9.0.0", "RAID", "Receiver")
+    check(c.a.versionState.latest is None and not list(c.a.versionState.peers.items()), "invalid, foreign, self and unsupported-channel announcements are ignored")
+    receive(c, c.a.version)
+    c.tick(4)
+    check(not c.events("print"), "equal versions produce no update notification")
+
+    c = Client()
+    c.log.clear()
+    c.g.guild = True
+    receive(c, "1.7.0")
+    receive(c, "2.0.0", "Newest", "GUILD")
+    check(not c.events("print"), "newer announcements are collected before notifying")
+    c.tick(4)
+    notices = c.events("print")
+    check(len(notices) == 2 and "2.0.0" in notices[0][1] and "Newest" in notices[0][1] and c.a.version in notices[0][1], "notice names the highest observed version, installed version and actual source")
+    check("https://github.com/mosf1c/SirusChatWheel/releases/latest" in notices[1][1], "notification links to the publisher releases")
+    check(not c.events("chat") and not c.events("play") and not c.events("packet"), "peer update notice stays private and silent")
+    receive(c, "3.0.0", "Another", "GUILD")
+    c.tick(5)
+    check(len(c.events("print")) == 2 and c.a.versionState.latest.version == "3.0.0", "later newer announcements do not repeat the automatic notice")
+    c.call("RequestPeerVersions", True)
+    check("3.0.0" in c.events("print")[-2][1] and "Another" in c.events("print")[-2][1], "manual check can show the newest peer information")
+
+    old, new = Client(), Client("Receiver")
+    new.a.version = "1.7.0"
+    old.log.clear()
+    new.log.clear()
+    old.tick(5)
+    pump(old, new)
+    new.tick(4)
+    check(len(packets(new, "V")) == 1, "newer peer answers an older client's query")
+    pump(new, old)
+    old.tick(4)
+    check(any("1.7.0" in p[1] and "Receiver" in p[1] for p in old.events("print")), "two independent clients complete version discovery over actual addon events")
+    check(not new.events("print") and not old.events("chat") and not new.events("chat"), "newer client stays quiet and version exchange creates no public chat")
+
+    c = Client()
+    c.g.guild = True
+    receive(c, "1.0.0", "Older", "GUILD", "Q")
+    check(c.a.versionState.replies.GUILD is not None, "older query schedules a staggered reply")
+    receive(c, c.a.version, "Equal", "GUILD")
+    c.tick(4)
+    check(not packets(c, "V"), "equal announcement suppresses duplicate guild replies")
+    c = Client()
+    c.g.guild = True
+    for i in range(200):
+        name = "Peer" + chr(65 + i // 26) + chr(65 + i % 26)
+        receive(c, "1.0.0", name, "GUILD", "Q")
+    check(len(list(c.a.versionState.peers.items())) == 64 and len(list(c.a.versionState.replies.items())) == 1, "peer bursts have bounded history and one pending reply per channel")
+    c.tick(4)
+    check(len(packets(c, "V")) == 1, "many old peers produce one channel announcement")
+    c.tick(10)
+    receive(c, "1.0.0", "PeerAA", "GUILD", "Q")
+    c.tick(4)
+    check(len(packets(c, "V")) == 1, "reply cooldown limits repeated requests")
+    c.tick(61)
+    receive(c, "1.0.0", "Fresh", "GUILD", "Q")
+    check(len(list(c.a.versionState.peers.items())) == 1, "expired version peer history releases capacity")
+
+    c = Client()
+    c.g.raid = False
+    c.log.clear()
+    c.tick(5)
+    c.call("RequestPeerVersions", True)
+    check(not packets(c) and len(c.events("print")) == 1 and not c.a.versionFrame.IsShown(c.a.versionFrame), "solo check explains peer availability without claiming GitHub is up to date")
+    check(not c.a.updateNoticePrinted, "no newer peer leaves automatic notification available")
+    c = Client()
+    receive(c, "1.7.0")
+    c.tick(4)
+    check(c.a.updateNoticePrinted, "a fresh login can notify again")
+    c = Client()
+    c.log.clear()
+    c.g.SirusChatWheelUpdateStatus = c.lua.table_from({"repository": "mosf1c/SirusChatWheel", "state": "ok", "version": "1.7.0", "checkedAt": c.g.time()})
+    c.call("ShowUpdateStatus", True)
+    receive(c, "2.0.0")
+    c.tick(4)
+    check(len(c.events("print")) == 2, "a prior automatic GitHub cache notice suppresses a second automatic peer notice")
 
 
 def test_full_release_copy():
@@ -654,7 +769,7 @@ if __name__ == "__main__":
         run_catalog(ADDON)
     if not (ADDON / "UpdateStatus.lua").exists():
         (ADDON / "UpdateStatus.lua").write_text("SirusChatWheelUpdateStatus = {}\n", encoding="utf-8")
-    for test in (test_base, test_player_mutes, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_full_release_copy):
+    for test in (test_base, test_player_mutes, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_peer_versions, test_full_release_copy):
         try:
             test()
         except Exception as error:

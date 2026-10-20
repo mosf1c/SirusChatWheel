@@ -1,7 +1,7 @@
 -- WoW 3.3.5a / Lua 5.1. No runtime libraries required.
 SirusChatWheel = {}
 local A = SirusChatWheel
-A.version = "1.5.1"
+A.version = "1.6.0"
 A.binding = "SIRUSCHATWHEEL_HOLD"
 A.media = "Interface\\AddOns\\SirusChatWheel\\Media\\"
 A.speakerMarkup = "|T" .. A.media .. "Speaker.tga:18:18:0:0|t "
@@ -10,7 +10,7 @@ A.directions = { "Вверх", "Вверх-вправо", "Вправо", "Вн�
 A.textChoices = {
     "Хорошо сыграно!", "Спасибо!", "Прошу прощения", "Подтверждаю",
     "Не сдавайтесь!", "Тяжелый пул", "Помогите!", "Назад!", "Атакуем!",
-    "Закончилась мана", "Полечите", "GG, WP!",
+    "Закончилась мана", "Полечите", "GG, WP!", "Осуждаю", "Никак нет!",
 }
 A.defaults = {
     channel = "RAID", fallbackSay = false, hideCursor = true, receiveSounds = true,

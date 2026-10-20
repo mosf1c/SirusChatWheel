@@ -11,9 +11,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "SirusChatWheel"
 DIST = ROOT / "dist"
-FILES = ["Bindings.xml", "Core.lua", "Init.lua", "Players.lua", "Sounds.lua", "Wheel.lua", "Options.lua", "Updates.lua",
+FILES = ["Bindings.xml", "Core.lua", "Init.lua", "Players.lua", "Sounds.lua", "Wheel.lua", "Options.lua", "Updates.lua", "Versions.lua",
     "SirusChatWheel.toc", "SoundCatalog.ps1", "Check-Updates.ps1", "Check-Updates.cmd", "Update-Sounds.cmd",
-    "Watch-Sounds.cmd", "Start-ChatWheel.cmd", "README_RU.txt", "TEST_REPORT_RU.txt", "SoundNames.json"]
+    "Watch-Sounds.cmd", "Start-ChatWheel.cmd", "README_RU.txt", "SoundNames.json"]
 AUTHOR_ONLY = {"SoundNames.json", "Update-Sounds.cmd", "Watch-Sounds.cmd"}
 
 

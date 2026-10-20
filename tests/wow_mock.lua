@@ -1,6 +1,7 @@
 -- Deterministic API stand-in: this does not render or run the Sirus client.
 now, epoch, player = 100, 1700000000, "Sender"
 cursorX, cursorY, focus, combat, raid = 400, 300, nil, false, true
+guild, raidRoster, partyRoster = false, { "Sender", "Receiver" }, {}
 frames, UISpecialFrames, SlashCmdList = {}, {}, {}
 tinsert = table.insert
 local methods = {}
@@ -100,11 +101,16 @@ function time() return math.floor(epoch + now) end
 function GetCursorPosition() return cursorX, cursorY end
 function GetCurrentKeyBoardFocus() return focus end
 function InCombatLockdown() return combat end
-function UnitName(unit) return unit == "player" and player or "Receiver" end
+function UnitName(unit)
+    if unit == "player" then return player end
+    local index = string.match(unit, "^party(%d+)$")
+    return index and partyRoster[tonumber(index)] or "Receiver"
+end
 function GetRealmName() return "Sirus" end
-function GetNumRaidMembers() return raid and 2 or 0 end
-function GetRaidRosterInfo(i) return i == 1 and "Sender" or "Receiver" end
-function GetNumPartyMembers() return 0 end
+function GetNumRaidMembers() return raid and #raidRoster or 0 end
+function GetRaidRosterInfo(i) return raidRoster[i] end
+function GetNumPartyMembers() return #partyRoster end
+function IsInGuild() return guild end
 function GetBindingAction() return binding or "TOGGLEACHIEVEMENT" end
 function SetBinding(_, value) binding = value; return true end
 function SaveBindings() end

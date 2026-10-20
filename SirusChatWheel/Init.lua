@@ -20,6 +20,7 @@ events:SetScript("OnEvent", function(_, event, name)
         A:CreateWheel()
         A:CreateOptions()
         A.ready = true
+        A:CreateVersionSystem()
         if not A.db.bindingInitialized then A:BindY(true) end
         if A.options.refresh then A.options.refresh() end
         A:Print("Удерживай " .. (GetBindingKey(A.binding) or "назначенную клавишу") ..
@@ -59,7 +60,7 @@ SlashCmdList["SIRUSCHATWHEEL"] = function(message)
     elseif command == "sounds" then
         A:Print("Голосовых файлов: " .. #A.soundList .. ". Новые звуки входят в полные выпуски аддона.")
     elseif command == "update" then
-        A:ShowUpdateStatus(false)
+        A:RequestPeerVersions(true)
     else
         A:OpenOptions()
     end
