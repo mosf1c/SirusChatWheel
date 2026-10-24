@@ -207,7 +207,7 @@ function A:CreatePlayersPage(page)
         end)
         ui.rows[i] = row
     end
-    Label(page, "Мут применяется сразу и сохраняется. Чат игрока остаётся виден.\nУже начавшаяся запись доиграет; очередь этого игрока удаляется.", 0, -247, 375, "GameFontDisableSmall")
+    Label(page, "Отключаются только звуки игрока. Его сообщения в чате остаются видимыми.", 0, -247, 375, "GameFontDisableSmall")
     page:SetScript("OnShow", function() A:RefreshPlayers() end)
     self:RefreshPlayers()
 end

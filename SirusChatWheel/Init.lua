@@ -52,7 +52,7 @@ SlashCmdList["SIRUSCHATWHEEL"] = function(message)
     elseif command == "status" then
         local channel = A:ResolveChannel()
         A:Print("Версия " .. A.version .. "; клавиша: " .. (GetBindingKey(A.binding) or "нет") ..
-            "; канал: " .. (channel and A:ChannelLabel(channel) or "RAID, но вы не в рейде") ..
+            "; канал: " .. (channel and A:ChannelLabel(channel) or "выключен (" .. A:ChannelLabel(A:ContextChannel()) .. ")") ..
             "; скрытие курсора: " .. (A.db.hideCursor and "вкл." or "выкл."))
     elseif command == "close" then
         A:CloseWheel(false)

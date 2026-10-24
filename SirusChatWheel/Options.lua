@@ -84,7 +84,7 @@ function A:SelectSlot(index, selection)
     panel.draft.slots[index] = self:NormalizeSlot(selection)
     self:UpdateSlotControl(index)
     if picker then picker:Hide() end
-    panel.status:SetText("Нажми «Сохранить», чтобы применить выбор.")
+    panel.status:SetText("Нажмите «ОК», чтобы применить выбор.")
 end
 
 function A:CreatePicker()
@@ -154,13 +154,18 @@ function A:RefreshOptions()
     panel.loading = true
     panel.draft = self:Copy(panel.defaultDraft or self.db)
     for i = 1, 8 do self:UpdateSlotControl(i) end
-    checks.raid:SetChecked(panel.draft.channel == "RAID"); checks.say:SetChecked(panel.draft.channel == "SAY")
-    checks.fallback:SetChecked(panel.draft.fallbackSay); checks.hide:SetChecked(panel.draft.hideCursor)
+    checks.raid:SetChecked(panel.draft.channels.RAID); checks.party:SetChecked(panel.draft.channels.PARTY)
+    checks.say:SetChecked(panel.draft.channels.SAY); checks.hide:SetChecked(panel.draft.hideCursor)
     checks.receive:SetChecked(panel.draft.receiveSounds)
     for key, slider in pairs(sliders) do slider:SetValue(panel.draft[key]) end
     panel.loading = false
-    panel.bindingText:SetText("Клавиша: " .. (GetBindingKey(self.binding) or "не назначена"))
     self:RefreshPlayers()
+end
+
+function A:ResetWheelOptions()
+    if not panel or not panel.draft then return end
+    for key, slider in pairs(sliders) do slider:SetValue(self.defaults[key]) end
+    panel.status:SetText("Значения сброшены. Нажмите «ОК», чтобы применить.")
 end
 
 function A:ApplyOptions()
@@ -180,10 +185,10 @@ function A:CreateOptions()
     panel = CreateFrame("Frame", "SirusChatWheelOptions", UIParent)
     panel.name = "Sirus Chat Wheel"; panel:Hide(); self.options = panel
     Text(panel, "Sirus Chat Wheel", 16, -16, 370, "GameFontNormalLarge")
-    Text(panel, "Нажми на фразу и выбери текст или голосовую запись.", 16, -42, 380)
+    Text(panel, "Удерживайте Y, чтобы открыть колесо чата.", 16, -42, 380)
     pages, selectors, listenButtons, checks, sliders = {}, {}, {}, {}, {}
     self.selectors = selectors
-    local tabs, titles = {}, { "Фразы", "Параметры", "Звуки", "Игроки" }
+    local tabs, titles = {}, { "Фразы", "Параметры", "Игроки" }
     self.optionTabs = tabs
     for i = 1, #titles do
         pages[i] = CreateFrame("Frame", nil, panel)
@@ -199,7 +204,7 @@ function A:CreateOptions()
             if picker then picker:Hide() end
         end)
     end
-    pages[2]:Hide(); pages[3]:Hide(); pages[4]:Hide(); tabs[1]:Disable()
+    pages[2]:Hide(); pages[3]:Hide(); tabs[1]:Disable()
     for i = 1, 8 do
         local index = i; local y = -(i - 1) * 31
         Text(pages[1], i .. ". " .. self.directions[i], 0, y - 6, 110)
@@ -222,37 +227,31 @@ function A:CreateOptions()
         end)
         listenButtons[i] = listen
     end
-    Text(pages[1], "Значок динамика — голосовая запись. Кнопка > — прослушать без отправки.", 0, -248, 370, "GameFontDisableSmall")
-    checks.raid = Check(pages[2], "ChannelRaid", "Рейд (/raid)", 0, function()
-        panel.draft.channel = "RAID"; checks.raid:SetChecked(true); checks.say:SetChecked(false)
+    Text(pages[2], "Использовать в:", 0, 0, 370, "GameFontNormal")
+    checks.raid = Check(pages[2], "ChannelRaid", "Рейде (/raid)", -22, function(self)
+        panel.draft.channels.RAID = self:GetChecked() and true or false
     end)
-    checks.say = Check(pages[2], "ChannelSay", "Сказать (/say)", -28, function()
-        panel.draft.channel = "SAY"; checks.say:SetChecked(true); checks.raid:SetChecked(false)
+    checks.party = Check(pages[2], "ChannelParty", "Группе (/group)", -50, function(self)
+        panel.draft.channels.PARTY = self:GetChecked() and true or false
     end)
-    checks.fallback = Check(pages[2], "FallbackSay", "Вне рейда отправлять в /say", -58, function(self) panel.draft.fallbackSay = self:GetChecked() and true or false end)
-    checks.hide = Check(pages[2], "HideCursor", "Скрывать обычный курсор при выборе", -86, function(self) panel.draft.hideCursor = self:GetChecked() and true or false end)
-    checks.receive = Check(pages[2], "ReceiveSounds", "Воспроизводить звуки других игроков", -114, function(self) panel.draft.receiveSounds = self:GetChecked() and true or false end)
-    sliders.scale = Slider(pages[2], "scale", "Размер колеса", -154, 0.65, 1.4, 0.05, "%.2f")
-    sliders.sensitivity = Slider(pages[2], "sensitivity", "Чувствительность мыши", -197, 0.5, 3, 0.1, "%.1f")
-    sliders.deadzone = Slider(pages[2], "deadzone", "Зона отмены в центре", -240, 6, 40, 1, "%.0f")
-    local bind = Button(pages[2], "Назначить Y", 100)
-    bind:SetPoint("TOPRIGHT", pages[2], "TOPRIGHT", -3, -155)
-    bind:SetScript("OnClick", function() A:BindY(false); panel.bindingText:SetText("Клавиша: " .. (GetBindingKey(A.binding) or "не назначена")) end)
-    Text(pages[2], "Y заменит\nтекущее\nназначение.", 295, -188, 76, "GameFontDisableSmall")
-    Text(pages[3], "Голосовые записи", 0, 0, 370, "GameFontNormal")
-    Text(pages[3], "Все звуки уже входят в полный архив аддона.\n\nЧтобы получить новые записи, закрой игру и скопируй папку SirusChatWheel из нового выпуска в Interface\\AddOns с заменой файлов.\n\nПосле запуска игры выбери новую запись на вкладке «Фразы».", 0, -30, 365)
-    Text(pages[3], "Настройки секторов сохраняются в WTF. Запись, исключённая из нового выпуска, оставляет пустой слот.\n\nЛимит: 2 звука за 30 с. Для совместного воспроизведения у игроков должны быть одинаковые файлы.", 0, -182, 365, "GameFontDisableSmall")
-    local apply = Button(panel, "Сохранить", 115)
-    apply:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 14); apply:SetScript("OnClick", function() A:ApplyOptions() end)
+    checks.say = Check(pages[2], "ChannelSay", "Обычном мире (/say)", -78, function(self)
+        panel.draft.channels.SAY = self:GetChecked() and true or false
+    end)
+    checks.hide = Check(pages[2], "HideCursor", "Скрывать обычный курсор при выборе", -116, function(self) panel.draft.hideCursor = self:GetChecked() and true or false end)
+    checks.receive = Check(pages[2], "ReceiveSounds", "Воспроизводить звуки других игроков", -144, function(self) panel.draft.receiveSounds = self:GetChecked() and true or false end)
+    sliders.scale = Slider(pages[2], "scale", "Размер колеса", -184, 0.65, 1.4, 0.05, "%.2f")
+    sliders.sensitivity = Slider(pages[2], "sensitivity", "Чувствительность мыши", -227, 0.5, 3, 0.1, "%.1f")
+    sliders.deadzone = Slider(pages[2], "deadzone", "Зона отмены в центре", -270, 6, 40, 1, "%.0f")
+    local reset = Button(pages[2], "Сбросить", 115, "SirusChatWheelResetWheel")
+    reset:SetPoint("TOPLEFT", pages[2], "TOPLEFT", 8, -307)
+    reset:SetScript("OnClick", function() A:ResetWheelOptions() end)
     local preview = Button(panel, "Проверить колесо", 145)
-    preview:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 139, 14)
+    preview:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 14)
     preview:SetScript("OnClick", function() A:ApplyOptions(); A.held = false; A:OpenWheel(true) end)
     panel.status = Text(panel, "", 0, 0, 380, "GameFontDisableSmall")
     panel.status:ClearAllPoints(); panel.status:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 43)
-    panel.bindingText = Text(panel, "", 0, 0, 380, "GameFontDisableSmall")
-    panel.bindingText:ClearAllPoints(); panel.bindingText:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 16, 0)
     local credit = Text(panel, "by mosf1c", 0, 0, 100, "GameFontDisableSmall")
-    credit:ClearAllPoints(); credit:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -16, 0)
+    credit:ClearAllPoints(); credit:SetPoint("RIGHT", panel, "BOTTOMRIGHT", -16, 26)
     credit:SetJustifyH("RIGHT")
     panel.okay = function() A:ApplyOptions() end
     panel.cancel = function() panel.defaultDraft = nil; A:RefreshOptions(); panel.status:SetText("") end
@@ -263,7 +262,7 @@ function A:CreateOptions()
         panel.defaultDraft = A:Normalize(defaults); A:RefreshOptions()
     end
     panel:SetScript("OnHide", function() if picker then picker:Hide() end end)
-    self:CreatePlayersPage(pages[4])
+    self:CreatePlayersPage(pages[3])
     self:CreatePicker(); self:RefreshOptions(); InterfaceOptions_AddCategory(panel)
 end
 

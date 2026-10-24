@@ -58,6 +58,16 @@ class Client:
     def tick(self, seconds):
         self.g.Tick(seconds)
 
+    def use_channel(self, channel):
+        self.a.db.channels = self.lua.table_from({key: key == channel for key in ("RAID", "PARTY", "SAY")})
+        self.g.raid = channel == "RAID"
+        self.g.partyRoster = self.lua.table_from(["Receiver" if self.g.player == "Sender" else "Sender"] if channel == "PARTY" else [])
+
+
+def next_version(client):
+    major, minor, _ = map(int, client.a.version.split("."))
+    return f"{major}.{minor + 1}.0"
+
 
 def pump(sender, receiver, sender_name=None):
     """Deliver queued wire messages after the caller's selected latency."""
@@ -115,12 +125,112 @@ def test_base():
     check(len(c.a.db.slots) == 8, "options default and apply")
 
 
+def test_context_modes():
+    channels = ("RAID", "PARTY", "SAY")
+    for context in channels:
+        for mask in range(8):
+            c = Client()
+            c.use_channel(context)
+            enabled = {channel: bool(mask & (1 << i)) for i, channel in enumerate(channels)}
+            c.a.db.channels = c.lua.table_from(enabled)
+            expected = context if enabled[context] else None
+            check(c.call("ResolveChannel") == expected, f"context {context} respects independent channel settings {mask}")
+            if not enabled[context]:
+                c.log.clear()
+                check(not c.call("SendPhrase", 1) and not c.call("SendSound", c.a.soundList[1].id) and
+                    not c.events("chat") and not c.events("packet") and not c.events("play") and len(c.a.db.soundUses) == 0,
+                    f"disabled {context} never falls back, sends or consumes the voice limit {mask}")
+    c = Client()
+    for legacy, expected in [({}, (True, True, True)), ({"channel": "RAID", "fallbackSay": False}, (True, True, False)),
+            ({"channel": "RAID", "fallbackSay": True}, (True, True, True)), ({"channel": "SAY"}, (False, False, True))]:
+        source = c.lua.table_from(legacy)
+        source.scale = 0.8
+        normalized = c.call("Normalize", source)
+        check(tuple(normalized.channels[name] for name in channels) == expected and normalized.channel is None and
+            normalized.fallbackSay is None and normalized.scale == 0.8 and normalized.schema == 5, "legacy channel settings migrate: " + repr(legacy))
+    source = c.lua.table_from({"channels": c.lua.table_from({name: False for name in channels})})
+    check(not any(c.call("Normalize", source).channels[name] for name in channels), "normalization preserves all contexts disabled")
+    for context in channels:
+        c = Client()
+        c.use_channel(context)
+        c.call("SendPhrase", 1)
+        check(len(c.events("chat")) == 1 and c.events("chat")[0][2] == context, "text sends once to the current context: " + context)
+        for index in range(1, BASE_SOUND_COUNT + 1):
+            sender, receiver = Client(), Client("Receiver", realm="ProxyEU Neverest x3 - 3.3.5a+")
+            sender.use_channel(context)
+            receiver.use_channel(context)
+            clip = sender.a.soundList[index]
+            check(sender.call("SendSound", clip.id), "voice accepted in current context: " + context + " " + clip.filename)
+            if context == "SAY":
+                receiver.call("HandleSayDiscovery", sender.events("chat")[0][1], "Sender")
+                pump(receiver, sender)
+            pump(sender, receiver)
+            check(len(receiver.events("play")) == 1 and sender.events("chat")[0][2] == context,
+                "every voice crosses the actual context transport: " + context + " " + clip.filename)
+    c = Client()
+    c.use_channel("PARTY")
+    clip = c.a.soundList[1]
+    packet = f"P|{clip.id}|party_foreign|{clip.digest}"
+    check(not c.call("HandleAddonSound", c.a.prefix, packet, "PARTY", "Outsider"), "party sound rejects players outside the group")
+    c.call("SetPlayerMuted", "Receiver", True)
+    check(not c.call("HandleAddonSound", c.a.prefix, packet, "PARTY", "Receiver"), "party sound respects saved mutes")
+    c.call("SetPlayerMuted", "Receiver", False)
+    c.a.db.receiveSounds = False
+    check(not c.call("HandleAddonSound", c.a.prefix, packet.replace("foreign", "disabled"), "PARTY", "Receiver"), "party sound respects receiving disabled")
+    c = Client()
+    c.use_channel("RAID")
+    c.call("SendSound", c.a.soundList[1].id)
+    c.use_channel("PARTY")
+    c.call("SendSound", c.a.soundList[1].id)
+    c.use_channel("SAY")
+    check(not c.call("SendSound", c.a.soundList[1].id) and len(c.events("chat")) == 2 and len(c.a.db.soundUses) == 2,
+        "switching contexts cannot reset the two-sound limit")
+
+
+def test_option_actions():
+    c = Client()
+    c.a.db.scale, c.a.db.sensitivity, c.a.db.deadzone = 0.8, 1.6, 25
+    c.a.db.soundUses = c.lua.table_from([c.g.time() - 1, c.g.time()])
+    c.call("RefreshOptions")
+    c.call("SetPlayerMuted", "Receiver", True)
+    c.call("SelectSlot", 1, c.lua.table_from({"kind": "text", "text": "DRAFT"}))
+    raid, party, say = c.g.SirusChatWheelChannelRaid, c.g.SirusChatWheelChannelParty, c.g.SirusChatWheelChannelSay
+    raid.SetChecked(raid, False)
+    raid.scripts.OnClick(raid)
+    say.SetChecked(say, False)
+    say.scripts.OnClick(say)
+    check(not c.a.options.draft.channels.RAID and c.a.options.draft.channels.PARTY and not c.a.options.draft.channels.SAY,
+        "context checkboxes edit their values independently")
+    reset = c.g.SirusChatWheelResetWheel
+    reset.scripts.OnClick(reset)
+    draft = c.a.options.draft
+    check((draft.scale, draft.sensitivity, draft.deadzone) == (1, 1, 16) and draft.slots[1].text == "DRAFT" and
+        not draft.channels.RAID and draft.channels.PARTY and not draft.channels.SAY, "reset changes only the three wheel values in the draft")
+    check(c.a.db.scale == 0.8 and len(c.a.db.soundUses) == 2 and c.call("IsPlayerMuted", "Receiver"), "reset leaves applied settings, rate limit and mutes intact")
+    c.a.options.cancel()
+    check(c.a.options.draft.scale == 0.8 and c.a.options.draft.slots[1].text != "DRAFT" and c.a.options.draft.channels.RAID,
+        "Cancel discards reset, channel and phrase drafts")
+    reset.scripts.OnClick(reset)
+    c.a.options.okay()
+    check((c.a.db.scale, c.a.db.sensitivity, c.a.db.deadzone) == (1, 1, 16) and len(c.a.db.soundUses) == 2,
+        "global OK applies the reset and preserves the voice limit")
+    c.g.SirusChatWheelSliderscale.SetValue(c.g.SirusChatWheelSliderscale, 1.2)
+    preview = next(w for _, w in c.a.options.children.items() if w.text == "Проверить колесо")
+    c.log.clear()
+    preview.scripts.OnClick(preview)
+    check(c.a.active and c.a.preview and abs(c.a.db.scale - 1.2) < 1e-9, "preview keeps its existing behavior of applying the draft")
+    c.call("CloseWheel", True)
+    c.a.options.cancel()
+    check(abs(c.a.db.scale - 1.2) < 1e-9 and not c.events("chat") and not c.events("packet") and not c.events("play") and
+        c.call("IsPlayerMuted", "Receiver"), "preview sends nothing and Cancel does not undo its already applied settings")
+
+
 def test_player_mutes():
     c = Client("Listener")
     sid = c.a.soundList[1].id
     digest = c.a.clips[sid].digest
     wire = lambda nonce: f"P|{sid}|{nonce}|{digest}"
-    check(len(c.a.optionTabs) == 4 and c.a.optionTabs[4].text == "Игроки", "players tab is available")
+    check(len(c.a.optionTabs) == 3 and c.a.optionTabs[3].text == "Игроки", "players tab is available")
     check(c.call("HandleAddonSound", c.a.prefix, wire("recent"), "RAID", "Sender"), "unmuted raid sender plays")
     row = c.a.playerOptions.rows[1]
     check(row.entry.name == "Sender-Neverest x3" and row.phrase.text == c.a.clips[sid].title, "recent list contains sender and last confirmed phrase")
@@ -173,7 +283,7 @@ def test_player_mutes():
     check(len(q.events("play")) == 2, "other sender still plays after queue cleanup")
     # Cancel an outstanding say handshake when muting, and preserve outbound replies.
     s, r = Client(), Client("Receiver")
-    s.a.db.channel = "SAY"
+    s.use_channel("SAY")
     s.call("SendSound", sid)
     r.call("HandleSayDiscovery", s.a.clips[sid].title, "Sender")
     request = r.events("packet")[0][2]
@@ -184,7 +294,7 @@ def test_player_mutes():
     pump(s, r)
     check(not r.events("play"), "late say response after mute cannot play")
     outgoing = Client()
-    outgoing.a.db.channel = "SAY"
+    outgoing.use_channel("SAY")
     outgoing.call("SetPlayerMuted", "Receiver", True)
     outgoing.call("SendSound", sid)
     check(outgoing.call("HandleAddonSound", outgoing.a.prefix, request, "WHISPER", "Receiver-Neverest x3"), "mute does not prevent responding to others about own sounds")
@@ -263,7 +373,7 @@ def test_sirus_realms():
                 for index in range(1, BASE_SOUND_COUNT + 1):
                     sender = Client(realm=source_realm)
                     receiver = Client("Receiver", realm=target_realm)
-                    sender.a.db.channel = channel
+                    sender.use_channel(channel)
                     clip = sender.a.soundList[index]
                     sender.call("SendSound", clip.id)
                     if channel == "SAY":
@@ -275,7 +385,7 @@ def test_sirus_realms():
     for channel in ["RAID", "PARTY", "GUILD"]:
         older = Client(realm=direct)
         newer = Client("Receiver", realm=routes[2])
-        newer.a.version = "1.6.2"
+        newer.a.version = next_version(older)
         for client in [older, newer]:
             client.log.clear()
             if channel == "GUILD":
@@ -290,7 +400,7 @@ def test_sirus_realms():
         pump(newer, older, "Receiver-" + routes[2])
         older.tick(4)
         check(older.a.updateNoticePrinted and older.a.versionState.latest.sender == "Receiver-Neverest x3" and
-            any("1.6.2" in p[1] for p in older.events("print")), "update discovery across a proxy uses a clean source name: " + channel)
+            any(newer.a.version in p[1] for p in older.events("print")), "update discovery across a proxy uses a clean source name: " + channel)
 
 
 def test_sound_messages():
@@ -303,7 +413,7 @@ def test_sound_messages():
     for channel in ("RAID", "SAY"):
         for clip in clips.values():
             sender, receiver = Client(), Client("Receiver")
-            sender.a.db.channel = channel
+            sender.use_channel(channel)
             check(sender.call("SendSound", clip.id), "voice send accepted: " + channel + " " + clip.filename)
             chat = sender.events("chat")[0]
             check(chat[1] == "<" + clip.title + ">" and chat[2] == channel,
@@ -318,7 +428,7 @@ def test_sound_messages():
     # Older senders use bare titles; the hidden Q/R protocol remains compatible.
     sender, receiver = Client(), Client("Receiver")
     clip = sender.a.soundList[1]
-    sender.a.db.channel = "SAY"
+    sender.use_channel("SAY")
     sender.call("SendSound", clip.id)
     check(receiver.call("HandleSayDiscovery", clip.title, "Sender"), "legacy bare title is recognized")
     pump(receiver, sender)
@@ -386,7 +496,7 @@ def test_bounded_history():
     waiting.call("PruneNetwork")
     check(not list(waiting.a.pendingQueries.items()) and not list(waiting.a.queryThrottle.items()), "expired say tracking releases all capacity")
     speaker = Client()
-    speaker.a.db.channel = "SAY"
+    speaker.use_channel("SAY")
     speaker.call("SendSound", sid)
     for i in range(100):
         name = "Nearby" + chr(65 + i // 26) + chr(65 + i % 26)
@@ -434,7 +544,7 @@ def test_limits_and_network():
 
 def test_delayed_say():
     c, r = Client(), Client("Receiver")
-    c.a.db.channel = "SAY"
+    c.use_channel("SAY")
     for index in (1, 2):
         sid = c.a.soundList[index].id
         c.call("SendSound", sid)
@@ -450,7 +560,7 @@ def test_delayed_say():
     r.tick(10)
     check(responses == 2 and len(r.events("play")) == 2, "both accepted SAY sounds survive delayed confirmation")
     c, r = Client(), Client("Receiver")
-    c.a.db.channel = "SAY"
+    c.use_channel("SAY")
     for index in (1, 2):
         c.call("SendSound", c.a.soundList[index].id)
         c.tick(0.2)
@@ -463,7 +573,7 @@ def test_delayed_say():
     r.tick(10)
     check(responses == 2 and len(r.events("play")) == 2, "two SAY sounds within one second both synchronize")
     c, r = Client(), Client("Receiver")
-    c.a.db.channel = "SAY"
+    c.use_channel("SAY")
     sid = c.a.soundList[1].id
     for _ in range(2):
         check(c.call("SendSound", sid), "repeated same sound accepted within limit")
@@ -617,6 +727,7 @@ def test_peer_versions():
         c.g.FireEvent("CHAT_MSG_ADDON", c.a.versionPrefix, kind + "|" + version, channel, sender)
 
     c = Client()
+    future = next_version(c)
     c.tick(5)
     check(len(packets(c, "Q")) == 1 and packets(c)[0][3] == "RAID", "login queries peer versions after startup")
     check(not c.a.versionFrame.IsShown(c.a.versionFrame), "version timer sleeps when idle")
@@ -634,7 +745,7 @@ def test_peer_versions():
     c.g.FireEvent("PLAYER_ENTERING_WORLD")
     c.tick(5)
     check(len(packets(c, "Q")) == 3, "repeated world and roster events respect the query cooldown")
-    receive(c, "1.7.0", channel="PARTY")
+    receive(c, future, channel="PARTY")
     c.tick(4)
     check(c.a.updateNoticePrinted and c.a.versionState.latest.sender == "Receiver-Neverest x3", "a current party member can announce a newer version")
 
@@ -654,7 +765,7 @@ def test_peer_versions():
     c = Client()
     c.log.clear()
     c.g.guild = True
-    receive(c, "1.7.0")
+    receive(c, future)
     receive(c, "2.0.0", "Newest", "GUILD")
     check(not c.events("print"), "newer announcements are collected before notifying")
     c.tick(4)
@@ -669,7 +780,7 @@ def test_peer_versions():
     check("3.0.0" in c.events("print")[-2][1] and "Another" in c.events("print")[-2][1], "manual check can show the newest peer information")
 
     old, new = Client(), Client("Receiver")
-    new.a.version = "1.7.0"
+    new.a.version = future
     old.log.clear()
     new.log.clear()
     old.tick(5)
@@ -678,7 +789,7 @@ def test_peer_versions():
     check(len(packets(new, "V")) == 1, "newer peer answers an older client's query")
     pump(new, old)
     old.tick(4)
-    check(any("1.7.0" in p[1] and "Receiver" in p[1] for p in old.events("print")), "two independent clients complete version discovery over actual addon events")
+    check(any(future in p[1] and "Receiver" in p[1] for p in old.events("print")), "two independent clients complete version discovery over actual addon events")
     check(not new.events("print") and not old.events("chat") and not new.events("chat"), "newer client stays quiet and version exchange creates no public chat")
 
     c = Client()
@@ -712,12 +823,12 @@ def test_peer_versions():
     check(not packets(c) and len(c.events("print")) == 1 and not c.a.versionFrame.IsShown(c.a.versionFrame), "solo check explains peer availability without claiming GitHub is up to date")
     check(not c.a.updateNoticePrinted, "no newer peer leaves automatic notification available")
     c = Client()
-    receive(c, "1.7.0")
+    receive(c, future)
     c.tick(4)
     check(c.a.updateNoticePrinted, "a fresh login can notify again")
     c = Client()
     c.log.clear()
-    c.g.SirusChatWheelUpdateStatus = c.lua.table_from({"repository": "mosf1c/SirusChatWheel", "state": "ok", "version": "1.7.0", "checkedAt": c.g.time()})
+    c.g.SirusChatWheelUpdateStatus = c.lua.table_from({"repository": "mosf1c/SirusChatWheel", "state": "ok", "version": future, "checkedAt": c.g.time()})
     c.call("ShowUpdateStatus", True)
     receive(c, "2.0.0")
     c.tick(4)
@@ -799,7 +910,7 @@ def test_full_release_copy():
         check(c.a.db.slots[1].kind == "sound" and c.a.db.slots[1].id == cat, "existing sound sector keeps its stable file ID")
         check(c.call("GetSlotText", 1) == "Обновлённый кот", "new title and audio content replace the old release")
         check(c.a.db.slots[2].text == "KEEP" and c.a.db.slots[3].id == dog, "other sector assignments survive copying")
-        check(c.a.db.channel == "SAY" and c.a.db.scale == 1.2 and c.a.db.sensitivity == 1.3 and c.a.db.deadzone == 20, "channel and wheel settings survive copying")
+        check(c.a.db.channels.SAY and not c.a.db.channels.RAID and c.a.db.scale == 1.2 and c.a.db.sensitivity == 1.3 and c.a.db.deadzone == 20, "channel and wheel settings survive copying")
         check(len(c.a.db.soundUses) == 2, "copying an update does not reset the voice rate limit")
         check(c.call("IsPlayerMuted", "Sender"), "copying an update preserves player mutes")
         check(saved.read_bytes() == saved_bytes, "copying never replaces WTF settings")
@@ -849,7 +960,7 @@ def test_full_release_copy():
         check(clean.a.ready and not (target / "Sounds").exists(), "clean replacement removes old source audio folder")
         check(clean.a.db.slots[1].id == cat and clean.a.db.slots[2].text == "KEEP" and clean.a.db.slots[3].kind == "empty", "clean replacement restores sector assignments and excludes removed sound")
         check(clean.call("IsPlayerMuted", "Sender") and len(clean.a.db.soundUses) == 2, "clean replacement restores mutes and rate limit")
-        check(saved.read_bytes() == saved_bytes and clean.a.db.channel == "SAY", "clean replacement leaves WTF file and channel intact")
+        check(saved.read_bytes() == saved_bytes and clean.a.db.channels.SAY and not clean.a.db.channels.RAID, "clean replacement leaves WTF file and channel intact")
 
 
 if __name__ == "__main__":
@@ -859,7 +970,7 @@ if __name__ == "__main__":
         run_catalog(ADDON)
     if not (ADDON / "UpdateStatus.lua").exists():
         (ADDON / "UpdateStatus.lua").write_text("SirusChatWheelUpdateStatus = {}\n", encoding="utf-8")
-    for test in (test_base, test_player_mutes, test_sirus_realms, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_peer_versions, test_full_release_copy):
+    for test in (test_base, test_context_modes, test_option_actions, test_player_mutes, test_sirus_realms, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_peer_versions, test_full_release_copy):
         try:
             test()
         except Exception as error:

@@ -1,7 +1,7 @@
 -- WoW 3.3.5a / Lua 5.1. No runtime libraries required.
 SirusChatWheel = {}
 local A = SirusChatWheel
-A.version = "1.6.1"
+A.version = "1.7.0"
 A.binding = "SIRUSCHATWHEEL_HOLD"
 A.media = "Interface\\AddOns\\SirusChatWheel\\Media\\"
 A.speakerMarkup = "|T" .. A.media .. "Speaker.tga:18:18:0:0|t "
@@ -13,7 +13,7 @@ A.textChoices = {
     "Закончилась мана", "Полечите", "GG, WP!", "Осуждаю", "Никак нет!",
 }
 A.defaults = {
-    channel = "RAID", fallbackSay = false, hideCursor = true, receiveSounds = true,
+    channels = { RAID = true, PARTY = true, SAY = true }, hideCursor = true, receiveSounds = true,
     scale = 1, sensitivity = 1, deadzone = 16, dim = 0.16,
 }
 
@@ -78,8 +78,20 @@ end
 
 function A:Normalize(source)
     local db = type(source) == "table" and self:Copy(source) or {}
-    db.channel = db.channel == "SAY" and "SAY" or "RAID"
-    for _, key in ipairs({ "fallbackSay", "hideCursor", "receiveSounds" }) do
+    if type(db.channels) ~= "table" then
+        if db.channel ~= nil or db.fallbackSay ~= nil then
+            db.channels = { RAID = db.channel ~= "SAY", PARTY = db.channel ~= "SAY",
+                SAY = db.channel == "SAY" or db.fallbackSay == true }
+        else db.channels = self:Copy(self.defaults.channels) end
+    end
+    local channels = {}
+    for _, channel in ipairs({ "RAID", "PARTY", "SAY" }) do
+        local enabled = db.channels[channel]
+        if enabled == nil then enabled = self.defaults.channels[channel] end
+        channels[channel] = enabled == true
+    end
+    db.channels, db.channel, db.fallbackSay = channels, nil, nil
+    for _, key in ipairs({ "hideCursor", "receiveSounds" }) do
         if db[key] == nil then db[key] = self.defaults[key] end
         db[key] = db[key] == true
     end
@@ -113,7 +125,7 @@ function A:Normalize(source)
     end
     db.soundUses = uses
     db.mutedPlayers = self:NormalizeMutedPlayers(db.mutedPlayers)
-    db.schema = 4
+    db.schema = 5
     return db
 end
 
@@ -147,15 +159,25 @@ function A:ShowError(message)
     else self:Print(message) end
 end
 
-function A:ResolveChannel()
-    if self.db.channel == "SAY" then return "SAY" end
+function A:ContextChannel()
     if GetNumRaidMembers() > 0 then return "RAID" end
-    if self.db.fallbackSay then return "SAY" end
-    return nil
+    if GetNumPartyMembers() > 0 then return "PARTY" end
+    return "SAY"
+end
+
+function A:ResolveChannel()
+    local channel = self:ContextChannel()
+    return self.db.channels[channel] and channel or nil
 end
 
 function A:ChannelLabel(channel)
-    return channel == "RAID" and "Рейд /raid" or "Сказать /say"
+    if channel == "RAID" then return "Рейд /raid" end
+    if channel == "PARTY" then return "Группа /group" end
+    return "Обычный мир /say"
+end
+
+function A:ShowChannelDisabled()
+    self:ShowError("Отправка отключена: " .. self:ChannelLabel(self:ContextChannel()) .. ". Включите её во вкладке «Параметры».")
 end
 
 local function Atan2(y, x)
@@ -179,7 +201,7 @@ function A:SendPhrase(index)
     if text == "" then return false end
     if self:IsSoundSlot(index) then return self:SendSound(self.db.slots[index].id) end
     local channel = self:ResolveChannel()
-    if not channel then self:ShowError("Вы не в рейде. Выберите /say или включите /say вне рейда."); return false end
+    if not channel then self:ShowChannelDisabled(); return false end
     local now = GetTime()
     if self.lastTextSent and now - self.lastTextSent < 0.8 then return false end
     local ok, err = pcall(SendChatMessage, self:CleanPhrase(text), channel)

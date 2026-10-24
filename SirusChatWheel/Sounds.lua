@@ -110,7 +110,7 @@ function A:SendSound(id)
     local wait = self:SoundWait(self.db.soundUses, now)
     if wait > 0 then self:ShowError("Использовать звуки можно через " .. wait .. " с"); return false end
     local channel = self:ResolveChannel()
-    if not channel then self:ShowError("Вы не в рейде. Выберите /say или включите /say вне рейда."); return false end
+    if not channel then self:ShowChannelDisabled(); return false end
     if not self:CanQueueClip() then self:ShowError("Дождитесь окончания очереди звуков."); return false end
     local action = { id = id, nonce = self:Nonce(), digest = clip.digest,
         at = GetTime(), channel = channel, requests = {} }
@@ -126,7 +126,9 @@ function A:SendSound(id)
         self:Print("Ошибка отправки: " .. tostring(err))
         return false
     end
-    if channel == "RAID" then self:SendPacket("P|" .. id .. "|" .. action.nonce .. "|" .. clip.digest, "RAID") end
+    if channel == "RAID" or channel == "PARTY" then
+        self:SendPacket("P|" .. id .. "|" .. action.nonce .. "|" .. clip.digest, channel)
+    end
     self:QueueClip(id, false)
     return true
 end
