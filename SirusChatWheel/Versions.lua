@@ -55,7 +55,7 @@ function A:HandleVersionPacket(prefix, packet, channel, sender)
     if prefix ~= self.versionPrefix or type(packet) ~= "string" or #packet > 19 or not ActiveChannel(channel) then return end
     local kind, version = string.match(packet, "^([QV])|([%d%.]+)$")
     if not kind or not self:IsValidVersion(version) then return end
-    local key = self:PlayerIdentity(sender)
+    local key, display = self:PlayerIdentity(sender)
     if not key or key == self:PlayerIdentity(UnitName("player")) then return end
     -- Guild addon traffic is delivered only to members by the server. Group
     -- traffic is additionally checked against the current local roster.
@@ -70,7 +70,7 @@ function A:HandleVersionPacket(prefix, packet, channel, sender)
     state.peers[key] = now
     if self:IsNewerVersion(version, self.version) and
         (not state.latest or self:IsNewerVersion(version, state.latest.version)) then
-        state.latest = { version = version, sender = string.match(sender, "^%s*(.-)%s*$") }
+        state.latest = { version = version, sender = display }
         if not self.updateNoticePrinted and not state.noticeAt then state.noticeAt = now + 4 end
     end
     if not self:IsNewerVersion(self.version, version) then

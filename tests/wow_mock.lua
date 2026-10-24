@@ -2,6 +2,7 @@
 now, epoch, player = 100, 1700000000, "Sender"
 cursorX, cursorY, focus, combat, raid = 400, 300, nil, false, true
 guild, raidRoster, partyRoster = false, { "Sender", "Receiver" }, {}
+realmName = "Neverest x3 - 3.3.5a+"
 frames, UISpecialFrames, SlashCmdList = {}, {}, {}
 tinsert = table.insert
 local methods = {}
@@ -106,7 +107,7 @@ function UnitName(unit)
     local index = string.match(unit, "^party(%d+)$")
     return index and partyRoster[tonumber(index)] or "Receiver"
 end
-function GetRealmName() return "Sirus" end
+function GetRealmName() return realmName end
 function GetNumRaidMembers() return raid and #raidRoster or 0 end
 function GetRaidRosterInfo(i) return raidRoster[i] end
 function GetNumPartyMembers() return #partyRoster end

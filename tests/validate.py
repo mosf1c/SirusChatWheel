@@ -29,13 +29,15 @@ def check(condition, message):
 
 
 class Client:
-    def __init__(self, player="Sender", root=ADDON, epoch=None, saved_path=None):
+    def __init__(self, player="Sender", root=ADDON, epoch=None, saved_path=None, realm=None):
         self.log = []
         self.lua = LuaRuntime(unpack_returned_tuples=True)
         self.g = self.lua.globals()
         self.g.emit = lambda *args: self.log.append(args)
         self.lua.execute(MOCK)
         self.g.player = player
+        if realm is not None:
+            self.g.realmName = realm
         if epoch is not None:
             self.g.epoch = epoch
         if saved_path is not None:
@@ -57,12 +59,12 @@ class Client:
         self.g.Tick(seconds)
 
 
-def pump(sender, receiver):
+def pump(sender, receiver, sender_name=None):
     """Deliver queued wire messages after the caller's selected latency."""
     messages = sender.events("packet")[:]
     sender.log[:] = [event for event in sender.log if event[0] != "packet"]
     for _, prefix, packet, channel, target in messages:
-        receiver.g.FireEvent("CHAT_MSG_ADDON", prefix, packet, channel, sender.g.player)
+        receiver.g.FireEvent("CHAT_MSG_ADDON", prefix, packet, channel, sender_name or sender.g.player)
 
 
 def test_base():
@@ -121,7 +123,7 @@ def test_player_mutes():
     check(len(c.a.optionTabs) == 4 and c.a.optionTabs[4].text == "Игроки", "players tab is available")
     check(c.call("HandleAddonSound", c.a.prefix, wire("recent"), "RAID", "Sender"), "unmuted raid sender plays")
     row = c.a.playerOptions.rows[1]
-    check(row.entry.name == "Sender-Sirus" and row.phrase.text == c.a.clips[sid].title, "recent list contains sender and last confirmed phrase")
+    check(row.entry.name == "Sender-Neverest x3" and row.phrase.text == c.a.clips[sid].title, "recent list contains sender and last confirmed phrase")
     row.action.scripts.OnClick(row.action)
     check(c.call("IsPlayerMuted", "sender") and row.action.text == "Вернуть звук", "recent sender button mutes immediately ignoring case")
     before = len(c.events("play"))
@@ -135,21 +137,21 @@ def test_player_mutes():
     c.a.options.cancel()
     c.a.options.default()
     c.call("ApplyOptions")
-    check(c.call("IsPlayerMuted", "Sender-Sirus"), "Save, Cancel and defaults preserve mutes")
+    check(c.call("IsPlayerMuted", "Sender-Neverest x3"), "Save, Cancel and defaults preserve mutes")
     c.lua.execute('SirusChatWheelDB = SirusChatWheel:Copy(SirusChatWheel.db)')
     c.g.FireEvent("PLAYER_LEAVING_WORLD")
     normalized = c.call("Normalize", c.g.SirusChatWheelDB)
-    check(normalized.mutedPlayers["sender-sirus"] == "Sender-Sirus", "mute survives SavedVariables normalization")
+    check(normalized.mutedPlayers["sender-neverestx3"] == "Sender-Neverest x3", "mute survives SavedVariables normalization")
     ui = c.a.playerOptions
     ui.muted.scripts.OnClick(ui.muted)
-    check(ui.rows[1].entry.name == "Sender-Sirus", "muted list includes saved sender")
+    check(ui.rows[1].entry.name == "Sender-Neverest x3", "muted list includes saved sender")
     ui.rows[1].action.scripts.OnClick(ui.rows[1].action)
     check(not c.call("IsPlayerMuted", "Sender") and ui.rows[1].entry is None, "unmute button immediately removes saved entry")
     check(not c.call("HandleAddonSound", c.a.prefix, wire("muted"), "RAID", "Sender"), "muted packet is not replayed after unmute")
     check(c.call("HandleAddonSound", c.a.prefix, wire("resumed"), "RAID", "Sender"), "new raid sound works after unmute")
     ui.input.SetText(ui.input, "  КОРОЛЬ  ")
     ui.input.scripts.OnEnterPressed(ui.input)
-    check(c.call("IsPlayerMuted", "король-SIRUS") and ui.input.GetText(ui.input) == "", "manual mute handles Cyrillic case and clears input")
+    check(c.call("IsPlayerMuted", "король-NEVEREST X3") and ui.input.GetText(ui.input) == "", "manual mute handles Cyrillic case and clears input")
     check(not c.call("IsPlayerMuted", "Король-OtherRealm"), "same nickname on another realm is independent")
     check(not c.call("HandleAddonSound", c.a.prefix, wire("foreign"), "RAID", "Sender-OtherRealm"), "raid identity cannot borrow membership from another realm")
     check(not c.call("SetPlayerMuted", "Listener", True)[0], "own character cannot be muted")
@@ -166,7 +168,7 @@ def test_player_mutes():
     q.call("HandleAddonSound", q.a.prefix, wire("queuedB"), "RAID", "Receiver")
     check(len(q.a.soundQueue) == 2, "two different remote senders queue behind local audio")
     q.call("SetPlayerMuted", "Sender", True)
-    check(len(q.a.soundQueue) == 1 and q.a.soundQueue[1].sender == "receiver-sirus", "mute removes only that sender's queued audio")
+    check(len(q.a.soundQueue) == 1 and q.a.soundQueue[1].sender == "receiver-neverestx3", "mute removes only that sender's queued audio")
     q.tick(10)
     check(len(q.events("play")) == 2, "other sender still plays after queue cleanup")
     # Cancel an outstanding say handshake when muting, and preserve outbound replies.
@@ -185,7 +187,7 @@ def test_player_mutes():
     outgoing.a.db.channel = "SAY"
     outgoing.call("SetPlayerMuted", "Receiver", True)
     outgoing.call("SendSound", sid)
-    check(outgoing.call("HandleAddonSound", outgoing.a.prefix, request, "WHISPER", "Receiver-Sirus"), "mute does not prevent responding to others about own sounds")
+    check(outgoing.call("HandleAddonSound", outgoing.a.prefix, request, "WHISPER", "Receiver-Neverest x3"), "mute does not prevent responding to others about own sounds")
     r.call("SetPlayerMuted", "Sender", False)
     s.tick(31)
     r.tick(31)
@@ -197,10 +199,98 @@ def test_player_mutes():
     # Verify real Lua reload through SavedVariables, including malformed legacy values.
     with tempfile.TemporaryDirectory(prefix="scw-mutes-") as folder:
         saved = Path(folder) / "SirusChatWheel.lua"
-        saved.write_text('SirusChatWheelDB={mutedPlayers={["sender-sirus"]="Sender-Sirus",bad=true}}', encoding="utf-8")
+        saved.write_text('SirusChatWheelDB={mutedPlayers={["sender-neverestx3"]="Sender-Neverestx3",bad=true}}', encoding="utf-8")
         restored = Client("Receiver", saved_path=saved)
         check(restored.call("IsPlayerMuted", "Sender"), "SavedVariables restore mute on a fresh client")
         check(len(list(restored.a.db.mutedPlayers.items())) == 1, "malformed saved mute entries are discarded")
+
+
+def test_sirus_realms():
+    direct = "Neverest x3 - 3.3.5a+"
+    routes = [direct, "Proxy Neverest x3 - 3.3.5a+", "ProxyEU Neverest x3 - 3.3.5a+"]
+    c = Client("Listener", realm=routes[2])
+    aliases = routes + ["Neverest x3", "Neverestx3", "ProxyEUNeverestx3", "proxyneverestx3",
+        "  proxyEU   NEVEREST   X3 - 3.3.5a+  ", "ProxyRU Neverest x3 - 4.4.0",
+        "ProxySEA2 Neverest x3 - 3.3.6b+", "Neverest x3 - 3.3.5a+-test"]
+    for realm in aliases:
+        result = c.call("PlayerIdentity", "КОРОЛЬ-" + realm)
+        check(result is not None and result[0] == "король-neverestx3", "same world across route/build/name variants: " + realm)
+    check(c.call("PlayerIdentity", "Король")[1] == "Король-Neverest x3", "nickname-only lookup uses the cleaned current world")
+    for realm, expected in [("Scourge x2 - 3.3.5a+", "scourgex2"), ("ProxyEU Sirus x5 - 3.3.5a+", "sirusx5"),
+            ("Neverest x4 - 3.3.5a+", "neverestx4"), ("New World x9 - 4.4.0b+", "newworldx9"),
+            ("Новый Мир x4 - 3.3.5a+", "новыймирx4"), ("Some.Realm+", "some.realm+")]:
+        check(c.call("PlayerIdentity", "Король-" + realm)[0] == "король-" + expected,
+            "other and future world names stay distinct: " + realm)
+    for realm in ["", " - 3.3.5a+", "Neverest\n x3", "Neverest\x00x3", "Neverest|cffff0000", "R" * 101]:
+        check(c.call("PlayerIdentity", "Sender-" + realm) is None, "invalid world data rejected: " + repr(realm))
+    check(not c.call("SetPlayerMuted", "Listener-" + direct, True)[0], "changing proxy spelling cannot bypass self-mute protection")
+    sid = c.a.soundList[1].id
+    digest = c.a.clips[sid].digest
+    for source_realm in routes:
+        speaker = "Sender-" + source_realm
+        c.call("RememberSpeaker", speaker, c.a.clips[sid])
+    check(len(c.a.recentSpeakers) == 1 and c.a.recentSpeakers[1].name == "Sender-Neverest x3", "recent speakers merge routes and show a clean world name")
+    c.call("SetPlayerMuted", "Sender-" + routes[1], True)
+    check(all(c.call("IsPlayerMuted", "Sender-" + realm) for realm in routes), "mute follows the character across proxy changes")
+    check(not c.call("IsPlayerMuted", "Sender-Scourge x2 - 3.3.5a+"), "mute does not affect a namesake on a different world")
+    c.call("SetPlayerMuted", "Sender-" + direct, False)
+    check(not c.call("IsPlayerMuted", "Sender-" + routes[2]), "unmute works through another route")
+    for i, source_realm in enumerate(routes):
+        c.call("HandleAddonSound", c.a.prefix, f"P|{sid}|route_{i}|{digest}", "RAID", "Sender-" + source_realm)
+    check(len(c.a.remoteUses["sender-neverestx3"]) == 2 and len(c.a.seenPacketOrder) == 2,
+        "changing route cannot bypass the incoming two-sound limit")
+    outsider = f"P|{sid}|wrong_world|{digest}"
+    check(not c.call("HandleAddonSound", c.a.prefix, outsider, "RAID", "Sender-Scourge x2 - 3.3.5a+"),
+        "same nickname on another world cannot borrow raid membership")
+
+    with tempfile.TemporaryDirectory(prefix="scw-world-migration-") as directory:
+        saved = Path(directory) / "SirusChatWheel.lua"
+        saved.write_text('SirusChatWheelDB={scale=1.2,slots={{kind="text",text="KEEP"}},mutedPlayers={'
+            'old="Sender-ProxyEUNeverestx3",full="Sender-Proxy Neverest x3 - 3.3.5a+",'
+            'plain="Sender-Neverest x3",other="Sender-Scourge x2 - 3.3.5a+"}}', encoding="utf-8")
+        restored = Client("Receiver", saved_path=saved, realm=routes[2])
+        check(len(list(restored.a.db.mutedPlayers.items())) == 2 and
+            restored.a.db.mutedPlayers["sender-neverestx3"] == "Sender-Neverest x3", "legacy mute names migrate and merge proxy duplicates")
+        check(restored.call("IsPlayerMuted", "Sender") and restored.call("IsPlayerMuted", "Sender-Scourge x2"),
+            "mute migration preserves both current-world and foreign-world entries")
+        check(restored.a.db.scale == 1.2 and restored.a.db.slots[1].text == "KEEP", "identity migration preserves other settings")
+
+    # Every shipped recording crosses all direct/proxy combinations in both
+    # public channels. The transport preserves the sender's reported address.
+    for source_realm in routes:
+        for target_realm in routes:
+            for channel in ["RAID", "SAY"]:
+                for index in range(1, BASE_SOUND_COUNT + 1):
+                    sender = Client(realm=source_realm)
+                    receiver = Client("Receiver", realm=target_realm)
+                    sender.a.db.channel = channel
+                    clip = sender.a.soundList[index]
+                    sender.call("SendSound", clip.id)
+                    if channel == "SAY":
+                        receiver.call("HandleSayDiscovery", sender.events("chat")[0][1], "Sender-" + source_realm)
+                        pump(receiver, sender, "Receiver-" + target_realm)
+                    pump(sender, receiver, "Sender-" + source_realm)
+                    check(len(receiver.events("play")) == 1 and receiver.a.recentSpeakers[1].name == "Sender-Neverest x3",
+                        "shipped voice across world routes: " + channel + " " + clip.filename + " " + source_realm + " -> " + target_realm)
+    for channel in ["RAID", "PARTY", "GUILD"]:
+        older = Client(realm=direct)
+        newer = Client("Receiver", realm=routes[2])
+        newer.a.version = "1.6.2"
+        for client in [older, newer]:
+            client.log.clear()
+            if channel == "GUILD":
+                client.g.guild = True
+                client.g.raid = False
+            elif channel == "PARTY":
+                client.g.raid = False
+                client.g.partyRoster = client.lua.table_from(["Receiver" if client is older else "Sender"])
+        older.tick(5)
+        pump(older, newer, "Sender-" + direct)
+        newer.tick(4)
+        pump(newer, older, "Receiver-" + routes[2])
+        older.tick(4)
+        check(older.a.updateNoticePrinted and older.a.versionState.latest.sender == "Receiver-Neverest x3" and
+            any("1.6.2" in p[1] for p in older.events("print")), "update discovery across a proxy uses a clean source name: " + channel)
 
 
 def test_sound_messages():
@@ -254,7 +344,7 @@ def test_bounded_history():
         c.call("HandleAddonSound", c.a.prefix, f"P|{sid}|burst_{i}|{digest}", "RAID", "Sender")
     check(len(list(c.a.seenPackets.items())) == 2 and len(c.a.seenPacketOrder) == 2, "300 commands retain only two accepted playback tokens")
     check(c.g.refreshCount == 2, "rate-limited commands do not refresh player UI")
-    check(len(c.a.remoteUses["sender-sirus"]) == 2, "history optimization preserves two sounds per rolling 30 seconds")
+    check(len(c.a.remoteUses["sender-neverestx3"]) == 2, "history optimization preserves two sounds per rolling 30 seconds")
     check(not c.call("HandleAddonSound", c.a.prefix, f"P|{sid}|burst_0|{digest}", "RAID", "Sender"), "accepted command remains protected from replay")
     c.tick(61)
     c.call("PruneNetwork")
@@ -546,7 +636,7 @@ def test_peer_versions():
     check(len(packets(c, "Q")) == 3, "repeated world and roster events respect the query cooldown")
     receive(c, "1.7.0", channel="PARTY")
     c.tick(4)
-    check(c.a.updateNoticePrinted and c.a.versionState.latest.sender == "Receiver", "a current party member can announce a newer version")
+    check(c.a.updateNoticePrinted and c.a.versionState.latest.sender == "Receiver-Neverest x3", "a current party member can announce a newer version")
 
     c = Client()
     c.log.clear()
@@ -671,7 +761,7 @@ def test_full_release_copy():
         saved.parent.mkdir(parents=True)
         saved.write_text('SirusChatWheelDB = {channel="SAY",scale=1.2,sensitivity=1.3,deadzone=20,bindingInitialized=true,'
             'slots={{kind="sound",id="' + cat + '"},{kind="text",text="KEEP"},{kind="sound",id="' + dog + '"}},'
-            'mutedPlayers={["sender-sirus"]="Sender-Sirus"},soundUses={1700000090,1700000095}}', encoding="utf-8")
+            'mutedPlayers={["sender-neverestx3"]="Sender-Neverestx3"},soundUses={1700000090,1700000095}}', encoding="utf-8")
         saved_bytes = saved.read_bytes()
         config = target / "UpdateConfig.json"
         config.write_bytes(b'{"repository":"user/repo"}')
@@ -769,7 +859,7 @@ if __name__ == "__main__":
         run_catalog(ADDON)
     if not (ADDON / "UpdateStatus.lua").exists():
         (ADDON / "UpdateStatus.lua").write_text("SirusChatWheelUpdateStatus = {}\n", encoding="utf-8")
-    for test in (test_base, test_player_mutes, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_peer_versions, test_full_release_copy):
+    for test in (test_base, test_player_mutes, test_sirus_realms, test_sound_messages, test_bounded_history, test_limits_and_network, test_delayed_say, test_send_failure, test_catalog, test_updates, test_peer_versions, test_full_release_copy):
         try:
             test()
         except Exception as error:

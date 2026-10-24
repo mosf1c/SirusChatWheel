@@ -3,7 +3,7 @@
 ## Notes: Eight-slot chat wheel with text and voice phrases for WoW Sirus 3.3.5a.
 ## Notes-ruRU: Колесо чата для WoW Sirus: 8 секторов, текстовые и голосовые фразы.
 ## Author: mosf1c
-## Version: 1.6.0
+## Version: 1.6.1
 ## SavedVariables: SirusChatWheelDB
 
 Catalog.lua

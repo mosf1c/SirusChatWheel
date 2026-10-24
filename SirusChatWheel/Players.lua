@@ -11,19 +11,42 @@ local function Lower(text)
     return string.gsub(text, "[\194-\244][\128-\191]+", cyrillicLower)
 end
 
+function A:NormalizeRealm(value)
+    if type(value) ~= "string" or #value > 100 or string.find(value, "[%z\1-\31\127|]") then return end
+    local realm = string.gsub(value, "%s+", " ")
+    realm = string.match(realm, "^%s*(.-)%s*$")
+    -- Connection labels and the client build are not separate game worlds.
+    realm = string.gsub(realm, "%s*%-%s*%d+%.%d+%.%d+[%w%.%+%-]*$", "")
+    local route = string.match(Lower(realm), "^proxy[%w_%-]*%s+")
+    if route then
+        realm = string.sub(realm, #route + 1)
+    elseif string.match(realm, "[xX]%d+$") then
+        -- Older saved names removed all spaces, including the route separator.
+        for _, prefix in ipairs({ "proxyeu", "proxyru", "proxyus", "proxy" }) do
+            if string.sub(Lower(realm), 1, #prefix) == prefix then
+                realm = string.sub(realm, #prefix + 1)
+                break
+            end
+        end
+    end
+    realm = string.match(realm, "^%s*(.-)%s*$")
+    realm = string.gsub(realm, "([^%s])[xX](%d+)$", "%1 x%2")
+    if realm == "" then return end
+    return realm
+end
+
 function A:PlayerIdentity(value)
     if type(value) ~= "string" or #value > 150 or string.find(value, "[%z\1-\31\127|]") then return end
     value = string.match(value, "^%s*(.-)%s*$")
     local character, realm = string.match(value, "^([^%-]+)%-(.+)$")
     character = character or value
     if #character == 0 or #character > 48 or not string.match(character, "^[%a\128-\255]+$") then return end
-    realm = realm or (GetRealmName and GetRealmName()) or ""
-    if #realm > 100 or not string.match(realm, "^[%w\128-\255%s'%-]*$") then return end
-    realm = string.gsub(realm, "%s+", "")
-    local key = Lower(character) .. "-" .. Lower(realm)
+    realm = self:NormalizeRealm(realm or (GetRealmName and GetRealmName()))
+    if not realm then return end
+    local key = Lower(character) .. "-" .. string.gsub(Lower(realm), "%s+", "")
     -- Keep the realm in saved values so another realm on this account cannot
     -- reinterpret an unqualified nickname after a reload.
-    return key, character .. (realm ~= "" and "-" .. realm or "")
+    return key, character .. "-" .. realm
 end
 
 function A:NormalizeMutedPlayers(source)
